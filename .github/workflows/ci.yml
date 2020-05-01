@@ -28,8 +28,8 @@ jobs:
 
       - name: Set Poetry config
         run: |
-          poetry config settings.virtualenvs.in-project false
-          poetry config settings.virtualenvs.path ~/.virtualenvs
+          poetry config --local virtualenvs.in-project true
+          poetry config virtualenvs.path ~/.virtualenvs
 
       - name: Rust Cargo build
         uses: actions-rs/cargo@v1
