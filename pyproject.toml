@@ -25,6 +25,7 @@ tox = "^3.14.6"
 mypy = "^0.770"
 pre-commit = "^2.3.0"
 isort = "^4.3.21"
+flake8 = "^3.7.9"
 
 [tool.tox]
 legacy_tox_ini = """
