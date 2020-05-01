@@ -42,7 +42,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
 
       - name: Test with pytest
-        run: poetry run pytest test --cov
+        run: poetry run pytest --cov=yurki test/
       
       - name: Code Quality
         run: poetry run black . --check
