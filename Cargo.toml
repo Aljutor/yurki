@@ -1,0 +1,13 @@
+[package]
+name = "yurki"
+version = "0.1.0"
+authors = ["Semyon Bessonov <aljutor@gmail.com>"]
+edition = "2018"
+
+[lib]
+name = "yurki"
+crate-type = ["cdylib"]
+
+[dependencies.cpython]
+version = "0.5"
+features = ["extension-module"]
