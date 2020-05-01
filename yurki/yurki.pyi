@@ -1,0 +1,3 @@
+# Typing stubs for rust library
+
+def stub() -> str: ...
