@@ -8,6 +8,18 @@ jobs:
       - uses: actions/checkout@v1
         with:
           fetch-depth: 1
+          
+      - name: Cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+          
+      - name: Cargo Check
+        run: cargo check
+      
+      - name: Rust Fmt
+        run: rustfmt --check
 
       - name: Set up Python 3.7
         uses: actions/setup-python@v1
@@ -22,27 +34,18 @@ jobs:
         id: cache
         with:
           path: ~/.virtualenvs
-          key: poetry-${{ hashFiles('**/poetry.lock') }}
+          key: poetry-${{ hashFiles('poetry.lock') }}
           restore-keys: |
-            poetry-${{ hashFiles('**/poetry.lock') }}
+            poetry-${{ hashFiles('poetry.lock') }}
 
       - name: Set Poetry config
         run: |
           poetry config --local virtualenvs.in-project false
           poetry config virtualenvs.path ~/.virtualenvs
 
-      - name: Cargo build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --all-features
-
       - name: Install Python Dependencies
         run: poetry install
         if: steps.cache.outputs.cache-hit != 'true'
-
-      - name: Pytest with Coverage
-        run: poetry run pytest --cov=yurki test/
       
       - name: Black
         run: poetry run black yurki/ --check
@@ -53,5 +56,6 @@ jobs:
       - name: MyPy
         run: poetry run mypy yurki/
       
-      - name: Cargo Check
-        run: cargo check
+      - name: Pytest with Coverage
+        run: poetry run pytest --cov=yurki test/
+    
