@@ -18,8 +18,8 @@ jobs:
       - name: Cargo Check
         run: cargo check
       
-      - name: Rust Fmt
-        run: rustfmt --check
+      - name: Cargo Fmt
+        run: cargo fmt -- --check
 
       - name: Set up Python 3.7
         uses: actions/setup-python@v1
