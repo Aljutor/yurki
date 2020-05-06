@@ -1,12 +1,20 @@
-use cpython::{py_fn, py_module_initializer, PyResult, Python};
+use cpython::{
+    PyList, PyResult, Python, py_fn, py_module_initializer
+};
+
+pub mod core;
+pub mod text;
 
 py_module_initializer!(yurki, |py, m| {
     m.add(py, "__doc__", "Fast NLP tools")?;
-    m.add(py, "stub", py_fn!(py, stub()))?;
+    m.add(py, "to_uppercase", py_fn!(py, to_uppercase(list: PyList)))?;
     Ok(())
 });
 
-fn stub(_: Python) -> PyResult<String> {
-    let out = "stub".to_string();
-    Ok(out)
+pub fn to_uppercase(py: Python, list: PyList) -> PyResult<PyList>{
+    core::map_pylist_inplace_parallel(py, &list, 4,|s|{
+        s.to_uppercase()
+    });
+
+    return Ok(list)
 }
