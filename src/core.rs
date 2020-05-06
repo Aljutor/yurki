@@ -27,12 +27,7 @@ pub fn map_pylist_inplace<'a, T: ToPyObject>(
     return list;
 }
 
-pub fn map_pylist<T: ToPyObject>(
-    py: Python,
-    list: &PyList,
-    func: fn(&str) -> T
-) -> PyList {
-
+pub fn map_pylist<T: ToPyObject>(py: Python, list: &PyList, func: fn(&str) -> T) -> PyList {
     let vec: Vec<PyObject> = list
         .iter(py)
         .map(|o| {
@@ -105,15 +100,10 @@ pub fn map_pylist_inplace_parallel<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::rstest;
     use cpython::{PyList, Python};
+    use rstest::rstest;
 
-    #[rstest(
-        input,
-        case::ascii("hello"),
-        case::utf8("привет"),
-        case::empty(""),
-    )]
+    #[rstest(input, case::ascii("hello"), case::utf8("привет"), case::empty(""))]
 
     fn test_make_string(input: &str) {
         let gil = Python::acquire_gil();

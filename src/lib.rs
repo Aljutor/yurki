@@ -1,6 +1,4 @@
-use cpython::{
-    PyList, PyResult, Python, py_fn, py_module_initializer
-};
+use cpython::{py_fn, py_module_initializer, PyList, PyResult, Python};
 
 pub mod core;
 pub mod text;
@@ -11,10 +9,8 @@ py_module_initializer!(yurki, |py, m| {
     Ok(())
 });
 
-pub fn to_uppercase(py: Python, list: PyList) -> PyResult<PyList>{
-    core::map_pylist_inplace_parallel(py, &list, 4,|s|{
-        s.to_uppercase()
-    });
+pub fn to_uppercase(py: Python, list: PyList) -> PyResult<PyList> {
+    core::map_pylist_inplace_parallel(py, &list, 4, |s| s.to_uppercase());
 
-    return Ok(list)
+    return Ok(list);
 }
