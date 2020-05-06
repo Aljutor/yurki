@@ -14,8 +14,6 @@ repos:
     hooks:
       - id: trailing-whitespace
         exclude: ^tests/.*/fixtures/.*
-      - id: end-of-file-fixer
-        exclude: ^tests/.*/fixtures/.*
       - id: debug-statements
 
   - repo: https://github.com/doublify/pre-commit-rust

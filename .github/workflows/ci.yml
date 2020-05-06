@@ -19,22 +19,22 @@ jobs:
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('Cargo.lock') }}
-        
+
       - name: Cache cargo build
         uses: actions/cache@v1
         with:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
-    
+
       - name: Cargo build
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: --release --all-features
-          
+
       - name: Cargo Check
         run: cargo check
-      
+
       - name: Cargo Fmt
         run: cargo fmt -- --check
 
@@ -62,16 +62,15 @@ jobs:
 
       - name: Install Python Dependencies
         run: poetry install
-      
+
       - name: Black
         run: poetry run black yurki/ --check
-        
+
       - name: Flake8
         run: poetry run flake8 yurki/
-      
+
       - name: MyPy
         run: poetry run mypy yurki/
-      
+
       - name: Pytest with Coverage
         run: poetry run pytest --cov=yurki test/
-    
