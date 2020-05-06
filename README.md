@@ -4,3 +4,11 @@
 
 
 Fast NLP tools
+
+## Requirements
+
+Yurki requires Python 3.7+ and rustc 1.43.0+
+
+## Changelog
+
+## Development
