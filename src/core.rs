@@ -1,5 +1,4 @@
-#![feature(allocator_api, heap_api)]
-use cpython::{PyList, PyObject, Python, PythonObject, ToPyObject};
+use cpython::{PyList, Python, PythonObject, ToPyObject};
 
 // hack object to pass raw pointer for PyObject
 #[derive(Clone)]
@@ -20,22 +19,24 @@ fn make_string_unsafe(o: *mut python3_sys::PyObject) -> String {
         let length = python3_sys::PyUnicode_GetLength(o) + 1;
 
         let layout = Layout::from_size_align(t_size * length as usize, t_align).unwrap();
-        let buffer = alloc(layout);
+        #[allow(clippy::cast_ptr_alignment)]
+        let buffer = alloc(layout) as *mut python3_sys::Py_UCS4;
         assert!(!buffer.is_null());
 
         // in good case PyUnicode_AsUCS4 falls into pure memcpy
         // and it does not mess with python gil (cause not use pymalloc)
-        let r = python3_sys::PyUnicode_AsUCS4(o, buffer as *mut python3_sys::Py_UCS4, length, 1);
+        let r = python3_sys::PyUnicode_AsUCS4(o, buffer, length, 1);
         assert!(!r.is_null());
 
         // from_ptr_with_nul accepts len of string without null-terminator
         // in general case we should get valid utf-8 string from python
-        let string =
-            U32CStr::from_ptr_with_nul(buffer as *mut python3_sys::Py_UCS4, (length - 1) as usize)
-                .to_string()
-                .unwrap();
 
-        dealloc(buffer, layout);
+        #[allow(clippy::wrong_self_convention)]
+        let string = U32CStr::from_ptr_with_nul(buffer, (length - 1) as usize)
+            .to_string()
+            .unwrap();
+
+        dealloc(buffer as *mut u8, layout);
         string
     }
 }
@@ -52,7 +53,7 @@ fn make_range(len: usize, chunk_size: usize, i: usize) -> (usize, usize) {
     let range_start = i * chunk_size;
     let range_stop = std::cmp::min(range_start + chunk_size, len);
 
-    return (range_start, range_stop);
+    (range_start, range_stop)
 }
 
 pub fn map_pylist_inplace_par<'a, T: 'static, F1, F2: 'static>(
@@ -118,5 +119,5 @@ where
         list.set_item(py, i, item);
     });
 
-    return list;
+    list
 }

@@ -20,7 +20,7 @@ py_module_initializer!(yurki, |py, m| {
 
 fn _find_in_string(string: &str, pattern: &Regex) -> String {
     let mat = pattern.find(string);
-    return mat.map(|x| x.as_str()).unwrap_or("").to_string();
+    mat.map(|x| x.as_str()).unwrap_or("").to_string()
 }
 
 pub fn find_in_string(
@@ -33,10 +33,10 @@ pub fn find_in_string(
 
     let make_func = move || {
         let pattern = pattern.clone();
-        return move |s: &str| _find_in_string(s, &pattern);
+        move |s: &str| _find_in_string(s, &pattern)
     };
 
     core::map_pylist_inplace_par(py, &list, jobs, make_func);
 
-    return Ok(list);
+    Ok(list)
 }
