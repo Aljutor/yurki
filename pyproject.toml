@@ -26,6 +26,7 @@ mypy = "^0.770"
 pre-commit = "^2.3.0"
 isort = "^4.3.21"
 flake8 = "^3.7.9"
+pytest-benchmark = "^3.2.3"
 
 [tool.tox]
 legacy_tox_ini = """

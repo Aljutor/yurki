@@ -1,93 +1,117 @@
+#![feature(allocator_api, heap_api)]
 use cpython::{PyList, PyObject, Python, PythonObject, ToPyObject};
 
-#[inline]
-fn make_string_fast(_py: Python, o: PyObject) -> String {
+// hack object to pass raw pointer for PyObject
+#[derive(Clone)]
+struct PyObjectPtr(*mut python3_sys::PyObject);
+unsafe impl Send for PyObjectPtr {}
+unsafe impl Sync for PyObjectPtr {}
+
+fn make_string_unsafe(o: *mut python3_sys::PyObject) -> String {
+    use std::alloc::{alloc, dealloc, Layout};
+    use std::mem;
+    use widestring::U32CStr;
+
+    let t_align = mem::align_of::<python3_sys::Py_UCS4>();
+    let t_size = mem::size_of::<python3_sys::Py_UCS4>();
+
     unsafe {
-        let mut size: python3_sys::Py_ssize_t = 0;
-        let data = python3_sys::PyUnicode_AsUTF8AndSize(o.as_ptr(), &mut size) as *const u8;
-        std::str::from_utf8(std::slice::from_raw_parts(data, (size) as usize))
-            .unwrap()
-            .to_string()
+        // +1 cause we use null-terminated strings
+        let length = python3_sys::PyUnicode_GetLength(o) + 1;
+
+        let layout = Layout::from_size_align(t_size * length as usize, t_align).unwrap();
+        let buffer = alloc(layout);
+        assert!(!buffer.is_null());
+
+        // in good case PyUnicode_AsUCS4 falls into pure memcpy
+        // and it does not mess with python gil (cause not use pymalloc)
+        let r = python3_sys::PyUnicode_AsUCS4(o, buffer as *mut python3_sys::Py_UCS4, length, 1);
+        assert!(!r.is_null());
+
+        // from_ptr_with_nul accepts len of string without null-terminator
+        // in general case we should get valid utf-8 string from python
+        let string =
+            U32CStr::from_ptr_with_nul(buffer as *mut python3_sys::Py_UCS4, (length - 1) as usize)
+                .to_string()
+                .unwrap();
+
+        dealloc(buffer, layout);
+        string
     }
 }
 
-pub fn map_pylist_inplace<'a, T: ToPyObject>(
-    py: Python,
-    list: &'a PyList,
-    func: fn(&str) -> T,
-) -> &'a PyList {
-    for (i, item) in list.iter(py).enumerate() {
-        let string = make_string_fast(py, item);
-        let result = func(&string);
-
-        let item = result.into_py_object(py).into_object();
-        list.set_item(py, i, item);
+fn get_string_at_idx(list: *mut python3_sys::PyObject, idx: usize) -> String {
+    unsafe {
+        let str_ptr = python3_sys::PyList_GetItem(list, idx as isize);
+        assert!(!str_ptr.is_null());
+        make_string_unsafe(str_ptr)
     }
-
-    return list;
 }
 
-pub fn map_pylist<T: ToPyObject>(py: Python, list: &PyList, func: fn(&str) -> T) -> PyList {
-    let vec: Vec<PyObject> = list
-        .iter(py)
-        .map(|o| {
-            let string = make_string_fast(py, o);
-            func(&string).to_py_object(py).into_object()
-        })
-        .collect::<Vec<PyObject>>();
+fn make_range(len: usize, chunk_size: usize, i: usize) -> (usize, usize) {
+    let range_start = i * chunk_size;
+    let range_stop = std::cmp::min(range_start + chunk_size, len);
 
-    PyList::new(py, &vec)
+    return (range_start, range_stop);
 }
 
-pub fn map_pylist_inplace_parallel<
-    'a,
-    T: 'static + ToPyObject + std::marker::Send + std::marker::Sync,
->(
+pub fn map_pylist_inplace_par<'a, T: 'static, F1, F2: 'static>(
     py: Python,
     list: &'a PyList,
     jobs: usize,
-    func: fn(String) -> T,
-) -> &'a PyList {
-    // better to use un parallel version if jobs < 2
+    make_func: F1,
+) -> &'a PyList
+where
+    T: ToPyObject + std::marker::Send + std::marker::Sync,
+    F1: Fn() -> F2,
+    F2: Fn(&str) -> T + std::marker::Send,
+{
     let jobs = if jobs < 1 { 1 } else { jobs };
+    let chunk_size = (list.len(py) / jobs) + 1;
+    let list_len = list.len(py);
+    let list_ptr = PyObjectPtr(list.as_object().as_ptr());
+
+    eprintln!("jobs {}, chunk size {}", jobs, chunk_size);
 
     // setup threading pool
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
+        .thread_name(|t| format!("worker_{}", t))
+        .start_handler(|t| {
+            eprintln!("worker_{} start", t);
+        })
+        .exit_handler(|t| {
+            eprintln!("worker_{} exit", t);
+        })
         .build()
         .unwrap();
 
     // channels to send task and receive results
-    let (send_task, get_task) = crossbeam_channel::unbounded();
     let (send_result, get_result) = crossbeam_channel::unbounded();
 
     // init all workers
-    for _ in 0..jobs {
-        let get_task = get_task.clone();
+    for t in 0..jobs {
+        let (range_start, range_stop) = make_range(list_len, chunk_size, t);
         let send_result = send_result.clone();
+        let list_ptr = list_ptr.clone();
 
+        let func = make_func();
         pool.spawn(move || {
-            get_task.iter().for_each(|(i, s): (usize, String)| {
-                send_result.send((i, func(s))).unwrap();
-            });
-        })
+            eprintln!(
+                "thread {} started, range {}, {}",
+                t, range_start, range_stop
+            );
+            for i in range_start..range_stop {
+                let string = get_string_at_idx(list_ptr.0, i);
+                let result = func(&string);
+
+                send_result.send((i, result)).unwrap();
+            }
+        });
     }
     // we don't need this channel after init of all workers
     drop(send_result);
 
-    // converting strings and sending them to workers
-    for (i, item) in list.iter(py).enumerate() {
-        let string = make_string_fast(py, item).to_string();
-        send_task.send((i, string)).unwrap();
-
-        // try get some results if we already have them
-        if let Ok((i, o)) = get_result.try_recv() {
-            list.set_item(py, i, o.into_py_object(py).into_object());
-        }
-    }
-    //we don't need this channel after sending all tasks
-    drop(send_task);
-    drop(pool);
     // collecting all remain results
     get_result.iter().for_each(|(i, o)| {
         let item = o.into_py_object(py).into_object();
@@ -95,115 +119,4 @@ pub fn map_pylist_inplace_parallel<
     });
 
     return list;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cpython::{PyList, Python};
-    use rstest::rstest;
-
-    #[rstest(input, case::ascii("hello"), case::utf8("привет"), case::empty(""))]
-
-    fn test_make_string(input: &str) {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        let o = py
-            .eval(format!("'{}'", input).as_str(), None, None)
-            .unwrap();
-        let string = make_string_fast(py, o);
-
-        assert_eq!(string, input.to_string())
-    }
-
-    #[test]
-    fn test_map_pylist() {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        let expected = "HELLO_ПРИВЕТ";
-
-        let l = py
-            .eval("['hello_привет' for _ in range(10)]", None, None)
-            .unwrap()
-            .cast_into::<PyList>(py)
-            .unwrap();
-
-        let list = map_pylist(py, &l, |s| s.to_uppercase());
-
-        assert_eq!(list.len(py), 10);
-
-        list.iter(py).for_each(|o| {
-            let s = make_string_fast(py, o);
-            assert_eq!(s, expected)
-        })
-    }
-
-    #[test]
-    fn test_map_pylist_inplace() {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        let expected = "HELLO_ПРИВЕТ";
-
-        let l = py
-            .eval("['hello_привет' for _ in range(10)]", None, None)
-            .unwrap()
-            .cast_into::<PyList>(py)
-            .unwrap();
-
-        map_pylist_inplace(py, &l, |s| s.to_uppercase());
-
-        assert_eq!(l.len(py), 10);
-
-        l.iter(py).for_each(|o| {
-            let s = make_string_fast(py, o);
-            assert_eq!(s, expected)
-        })
-    }
-
-    #[test]
-    fn test_map_pylist_inplace_parallel() {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        let expected = "HELLO_ПРИВЕТ";
-
-        let l = py
-            .eval("['hello_привет' for _ in range(10)]", None, None)
-            .unwrap()
-            .cast_into::<PyList>(py)
-            .unwrap();
-
-        map_pylist_inplace_parallel(py, &l, 2, |s| s.to_uppercase());
-
-        assert_eq!(l.len(py), 10);
-        l.iter(py).for_each(|o| {
-            let s = make_string_fast(py, o);
-            assert_eq!(s, expected)
-        })
-    }
-
-    #[test]
-    fn test_map_pylist_inplace_parallel_zero_jobs() {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        let expected = "HELLO_ПРИВЕТ";
-
-        let l = py
-            .eval("['hello_привет' for _ in range(10)]", None, None)
-            .unwrap()
-            .cast_into::<PyList>(py)
-            .unwrap();
-
-        map_pylist_inplace_parallel(py, &l, 0, |s| s.to_uppercase());
-
-        assert_eq!(l.len(py), 10);
-        l.iter(py).for_each(|o| {
-            let s = make_string_fast(py, o);
-            assert_eq!(s, expected)
-        })
-    }
 }

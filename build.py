@@ -1,7 +1,9 @@
 from typing import Dict, Any
 from setuptools_rust import Binding, RustExtension, build_ext
 
-rust_extensions = [RustExtension("yurki.yurki", binding=Binding.RustCPython)]
+rust_extensions = [
+    RustExtension("yurki.yurki", binding=Binding.RustCPython, debug=False)
+]
 
 
 def build(setup_kwargs: Dict[str, Any]) -> None:

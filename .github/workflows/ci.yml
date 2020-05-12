@@ -79,4 +79,4 @@ jobs:
         run: poetry run mypy yurki/
 
       - name: Pytest with Coverage
-        run: poetry run pytest --cov=yurki tests/
+        run: poetry run pytest --benchmark-skip --cov=yurki tests/
