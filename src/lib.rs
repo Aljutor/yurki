@@ -1,9 +1,8 @@
 use cpython::{py_fn, py_module_initializer, PyList, PyResult, PyString, Python};
+use regex::Regex;
 
 pub mod core;
 pub mod text;
-
-use regex::Regex;
 
 py_module_initializer!(yurki, |py, m| {
     m.add(py, "__doc__", "Fast NLP tools")?;
@@ -12,31 +11,26 @@ py_module_initializer!(yurki, |py, m| {
         "find_in_string",
         py_fn!(
             py,
-            find_in_string(list: PyList, pattern: PyString, jobs: usize)
+            find_in_string(list: PyList, pattern: PyString, jobs: usize, inplace: bool)
         ),
     )?;
     Ok(())
 });
-
-fn _find_in_string(string: &str, pattern: &Regex) -> String {
-    let mat = pattern.find(string);
-    mat.map(|x| x.as_str()).unwrap_or("").to_string()
-}
 
 pub fn find_in_string(
     py: Python,
     list: PyList,
     pattern: PyString,
     jobs: usize,
+    inplace: bool,
 ) -> PyResult<PyList> {
     let pattern = Regex::new(&pattern.to_string(py).unwrap()).unwrap();
 
     let make_func = move || {
         let pattern = pattern.clone();
-        move |s: &str| _find_in_string(s, &pattern)
+        move |s: &str| text::find_in_string(s, &pattern)
     };
 
-    core::map_pylist_inplace_par(py, &list, jobs, make_func);
-
+    let list = core::map_pylist(py, list, jobs, inplace, make_func);
     Ok(list)
 }

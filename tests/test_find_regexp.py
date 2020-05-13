@@ -1,5 +1,6 @@
 import re
 import yurki
+import pytest
 
 PATTERN = r"(hi_how_are_you)|(hello)|(привет\d+)"
 
@@ -17,37 +18,53 @@ def make_data(size=100000, long=False):
     return data, expected
 
 
-def test_find_rust_4():
-    data, expected = make_data(1000)
-    result = yurki.find_in_string(data, PATTERN, 4)
-    assert result == expected
+test_data = [
+    (1, False),
+    (1, True),
+    (4, False),
+    (4, True),
+]
 
 
-def test_find_rust_1():
-    data, expected = make_data(1000)
-    result = yurki.find_in_string(data, PATTERN, 4)
-    assert result == expected
+class TestFind:
+    @pytest.mark.parametrize("jobs, inplace", test_data)
+    def test_find_rust(self, jobs, inplace):
+        data, expected = make_data(1000, long=False)
+        result = yurki.find_in_string(data, PATTERN, jobs, inplace)
+        assert result == expected
 
 
-# Benchmarks
-def test_find_rust_1_bench(benchmark):
-    data, expected = make_data()
-    result = benchmark(yurki.find_in_string, data, PATTERN, 1)
-    assert result == expected
+class TestBenchFind:
+    @pytest.mark.parametrize("jobs, inplace", test_data)
+    def test_find_rust(self, jobs, inplace, benchmark):
+        data, expected = make_data(long=False)
+        result = benchmark(yurki.find_in_string, data, PATTERN, jobs, inplace)
+        assert result == expected
+
+    def test_find_python(self, benchmark):
+        pattern = re.compile(PATTERN)
+        data, expected = make_data(long=False)
+
+        def find(data):
+            return [pattern.search(s).group(0) for s in data]
+
+        result = benchmark(find, data)
+        assert result == expected
 
 
-def test_find_rust_4_bench(benchmark):
-    data, expected = make_data()
-    result = benchmark(yurki.find_in_string, data, PATTERN, 4)
-    assert result == expected
+class TestBenchFindLong:
+    @pytest.mark.parametrize("jobs, inplace", test_data)
+    def test_find_rust(self, jobs, inplace, benchmark):
+        data, expected = make_data(long=True)
+        result = benchmark(yurki.find_in_string, data, PATTERN, jobs, inplace)
+        assert result == expected
 
+    def test_find_python(self, benchmark):
+        pattern = re.compile(PATTERN)
+        data, expected = make_data(long=True)
 
-def test_find_python_bench(benchmark):
-    pattern = re.compile(PATTERN)
+        def find(data):
+            return [pattern.search(s).group(0) for s in data]
 
-    def find(data):
-        return [pattern.search(s).group(0) for s in data]
-
-    data, expected = make_data()
-    result = benchmark(find, data)
-    assert result == expected
+        result = benchmark(find, data)
+        assert result == expected

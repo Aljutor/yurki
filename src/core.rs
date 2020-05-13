@@ -56,14 +56,19 @@ fn make_range(len: usize, chunk_size: usize, i: usize) -> (usize, usize) {
     (range_start, range_stop)
 }
 
-pub fn map_pylist_inplace_par<'a, T: 'static, F1, F2: 'static>(
+pub fn map_pylist<'a, T: 'static, F1, F2: 'static>(
     py: Python,
-    list: &'a PyList,
+    list: PyList,
     jobs: usize,
+    inplace: bool,
     make_func: F1,
-) -> &'a PyList
+) -> PyList
 where
-    T: ToPyObject + std::marker::Send + std::marker::Sync,
+    T: ToPyObject
+        + std::marker::Send
+        + std::marker::Sync
+        + std::clone::Clone
+        + std::default::Default,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send,
 {
@@ -112,12 +117,18 @@ where
     }
     // we don't need this channel after init of all workers
     drop(send_result);
-
     // collecting all remain results
-    get_result.iter().for_each(|(i, o)| {
-        let item = o.into_py_object(py).into_object();
-        list.set_item(py, i, item);
-    });
-
-    list
+    return if inplace {
+        get_result.iter().for_each(|(i, o)| {
+            let item = o.into_py_object(py).into_object();
+            list.set_item(py, i, item);
+        });
+        list
+    } else {
+        let mut tmp_vec = vec![T::default(); list.len(py)];
+        get_result.iter().for_each(|(i, o)| {
+            tmp_vec[i] = o;
+        });
+        tmp_vec.into_py_object(py)
+    };
 }
