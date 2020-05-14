@@ -3,7 +3,8 @@ import numpy as np
 import scipy.sparse
 from typing import List, Tuple, Dict
 
-from . import yurki  # noqa
+
+from . import yurki  # type: ignore
 
 
 def tokenize_string(
