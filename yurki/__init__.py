@@ -3,8 +3,13 @@ import numpy as np  # type: ignore
 import scipy.sparse  # type: ignore
 from typing import List, Tuple, Dict
 
-
 from . import yurki  # type: ignore
+
+
+def find_in_string(
+    data: List[str], pattern: str, jobs: int = 1, inplace: bool = False
+) -> List[str]:
+    return yurki.find_in_string(data, pattern, jobs, inplace)
 
 
 def tokenize_string(
