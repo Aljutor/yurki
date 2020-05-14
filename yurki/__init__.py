@@ -1,6 +1,6 @@
 import array
-import numpy as np
-import scipy.sparse
+import numpy as np  # type: ignore
+import scipy.sparse  # type: ignore
 from typing import List, Tuple, Dict
 
 
