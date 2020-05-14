@@ -17,6 +17,7 @@ itertools = "0.7.6"
 lazy_static = "1.4.0"
 python3-sys = "0.5.0"
 widestring = "*"
+chashmap = "2.2.2"
 
 [dependencies.cpython]
 version = "0.5"

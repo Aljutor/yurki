@@ -104,7 +104,7 @@ where
         let func = make_func();
         pool.spawn(move || {
             eprintln!(
-                "thread {} started, range {}, {}",
+                "worker_{} started, range {}, {}",
                 t, range_start, range_stop
             );
             for i in range_start..range_stop {

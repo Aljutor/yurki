@@ -15,6 +15,9 @@ include = ["Cargo.toml", "src/*.rs"]
 
 [tool.poetry.dependencies]
 python = "^3.7 || ^3.8"
+pandas = "^1.0.3"
+scipy = "^1.4.1"
+scikit-learn = "^0.23.0"
 
 [tool.poetry.dev-dependencies]
 setuptools_rust = "^0.10.6"
@@ -27,12 +30,17 @@ pre-commit = "^2.3.0"
 isort = "^4.3.21"
 flake8 = "^3.7.9"
 pytest-benchmark = "^3.2.3"
+jupyter = "^1.0.0"
 
 [tool.tox]
 legacy_tox_ini = """
 [tox]
 isolated_build = true
 envlist = py37, py38
+
+[flake8]
+max-line-length = 88
+extend-ignore = E203
 
 [testenv]
 whitelist_externals = poetry
