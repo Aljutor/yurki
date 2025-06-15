@@ -1,32 +1,40 @@
-use cpython::{PyList, Python, PythonObject, ToPyObject};
-
+use pyo3::ffi as pyo3_ffi;
+use pyo3::prelude::*;
+use pyo3::types::PyList;
+use pyo3::{PyObject, Python, ToPyObject};
 // hack object to pass raw pointer for PyObject
 #[derive(Clone)]
-struct PyObjectPtr(*mut python3_sys::PyObject);
+struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
-fn make_string_unsafe(o: *mut python3_sys::PyObject) -> String {
+fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
     use std::alloc::{alloc, dealloc, Layout};
     use std::mem;
     use widestring::U32CStr;
 
-    let t_align = mem::align_of::<python3_sys::Py_UCS4>();
-    let t_size = mem::size_of::<python3_sys::Py_UCS4>();
+    // it maybe possible to remove manual memory allocation here
+
+    let t_align = mem::align_of::<pyo3_ffi::Py_UCS4>();
+    let t_size = mem::size_of::<pyo3_ffi::Py_UCS4>();
 
     unsafe {
+        // asserts for sanity
+        assert!(!o.is_null());
+        assert!(pyo3_ffi::PyUnicode_Check(o) != 0);
+
         // +1 cause we use null-terminated strings
-        let length = python3_sys::PyUnicode_GetLength(o) + 1;
+        let length = pyo3_ffi::PyUnicode_GetLength(o) + 1;
 
         let layout = Layout::from_size_align(t_size * length as usize, t_align).unwrap();
         #[allow(clippy::cast_ptr_alignment)]
-        let buffer = alloc(layout) as *mut python3_sys::Py_UCS4;
+        let buffer = alloc(layout) as *mut pyo3_ffi::Py_UCS4;
         assert!(!buffer.is_null());
 
         // in good case PyUnicode_AsUCS4 falls into pure memcpy
-        // and it does not mess with python gil (cause not use pymalloc)
-        let r = python3_sys::PyUnicode_AsUCS4(o, buffer, length, 1);
-        assert!(!r.is_null());
+        // and it does not mess with python gil (it does not use pymalloc)
+        let result: *mut u32 = pyo3_ffi::PyUnicode_AsUCS4(o, buffer, length, 1);
+        assert!(!result.is_null());
 
         // from_ptr_with_nul accepts len of string without null-terminator
         // in general case we should get valid utf-8 string from python
@@ -41,53 +49,106 @@ fn make_string_unsafe(o: *mut python3_sys::PyObject) -> String {
     }
 }
 
-fn get_string_at_idx(list: *mut python3_sys::PyObject, idx: usize) -> String {
+
+fn get_string_at_idx(list: *mut pyo3_ffi::PyObject, idx: usize) -> String {
     unsafe {
-        let str_ptr = python3_sys::PyList_GetItem(list, idx as isize);
+        let str_ptr = pyo3_ffi::PyList_GetItem(list, idx as isize);
         assert!(!str_ptr.is_null());
         make_string_unsafe(str_ptr)
     }
 }
 
-fn make_range(len: usize, chunk_size: usize, i: usize) -> (usize, usize) {
-    let range_start = i * chunk_size;
-    let range_stop = std::cmp::min(range_start + chunk_size, len);
-
-    (range_start, range_stop)
-}
-
-pub fn map_pylist<'a, T: 'static, F1, F2: 'static>(
+fn map_pylist_sequential<'a, T, F1, F2>(
     py: Python,
-    list: PyList,
-    jobs: usize,
+    list: &'a Bound<PyList>,
     inplace: bool,
     make_func: F1,
-) -> PyList
+) -> PyResult<Py<PyList>>
 where
     T: ToPyObject
         + std::marker::Send
         + std::marker::Sync
         + std::clone::Clone
-        + std::default::Default,
+        + std::default::Default
+        + 'static,
     F1: Fn() -> F2,
-    F2: Fn(&str) -> T + std::marker::Send,
+    F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
-    let jobs = if jobs < 1 { 1 } else { jobs };
-    let chunk_size = (list.len(py) / jobs) + 1;
-    let list_len = list.len(py);
-    let list_ptr = PyObjectPtr(list.as_object().as_ptr());
+    let list_len = list.len();
+    let list_ptr = PyObjectPtr(list.as_ptr());
+    let func = make_func();
 
-    eprintln!("jobs {}, chunk size {}", jobs, chunk_size);
+    eprintln!("sequential processing, list length {}", list_len);
+
+    if inplace {
+        for i in 0..list_len {
+            let string = get_string_at_idx(list_ptr.0, i);
+            let result = func(&string);
+            let item: PyObject = result.to_object(py);
+            list.set_item(i, item).unwrap();
+        }
+        Ok(list.clone().into())
+    } else {
+        let mut tmp_vec = vec![T::default(); list_len];
+        for i in 0..list_len {
+            let string = get_string_at_idx(list_ptr.0, i);
+            let result = func(&string);
+            tmp_vec[i] = result;
+        }
+        Ok(PyList::new_bound(py, tmp_vec).into())
+    }
+}
+
+
+fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
+    assert!(jobs > 0, "jobs must be > 0");
+    assert!(i < jobs, "thread index {} is out of range (jobs = {})", i, jobs);
+
+    let base = len / jobs;
+    let rem = len % jobs;
+
+    // Distribute the remainder to the first `rem` jobs
+    let start = i * base + i.min(rem);
+    let end = start + base + if i < rem { 1 } else { 0 };
+
+    (start, end)
+}
+
+
+fn map_pylist_parallel<'a, T, F1, F2>(
+    py: Python,
+    list: &'a Bound<PyList>,
+    jobs: usize,
+    inplace: bool,
+    make_func: F1,
+) -> PyResult<Py<PyList>>
+where
+    T: ToPyObject
+        + std::marker::Send
+        + std::marker::Sync
+        + std::clone::Clone
+        + std::default::Default
+        + 'static,
+    F1: Fn() -> F2,
+    F2: Fn(&str) -> T + std::marker::Send + 'static,
+{
+    let list_len = list.len();
+    let list_ptr = PyObjectPtr(list.as_ptr());
+
+    let real_jobs = jobs.min(list_len);
+    eprintln!(
+        "parallel processing: jobs {}",  real_jobs
+    );
 
     // setup threading pool
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
+        .num_threads(real_jobs)
         .thread_name(|t| format!("worker_{}", t))
         .start_handler(|t| {
-            eprintln!("worker_{} start", t);
+            eprintln!("thread{} init", t);
         })
         .exit_handler(|t| {
-            eprintln!("worker_{} exit", t);
+            eprintln!("thread{} exit", t);
         })
         .build()
         .unwrap();
@@ -96,8 +157,8 @@ where
     let (send_result, get_result) = crossbeam_channel::unbounded();
 
     // init all workers
-    for t in 0..jobs {
-        let (range_start, range_stop) = make_range(list_len, chunk_size, t);
+    for job_idx in 0..real_jobs {
+        let (range_start, range_stop) = make_range(list_len, real_jobs, job_idx);
         let send_result = send_result.clone();
         let list_ptr = list_ptr.clone();
 
@@ -105,7 +166,7 @@ where
         pool.spawn(move || {
             eprintln!(
                 "thread {} started, range {}, {}",
-                t, range_start, range_stop
+                job_idx, range_start, range_stop
             );
             for i in range_start..range_stop {
                 let string = get_string_at_idx(list_ptr.0, i);
@@ -115,20 +176,46 @@ where
             }
         });
     }
-    // we don't need this channel after init of all workers
+    // we don't need this channel side after init of all workers
     drop(send_result);
+
     // collecting all remain results
-    return if inplace {
+    if inplace {
         get_result.iter().for_each(|(i, o)| {
-            let item = o.into_py_object(py).into_object();
-            list.set_item(py, i, item);
+            let item: PyObject = o.to_object(py);
+            list.set_item(i, item).unwrap();
         });
-        list
+        Ok(list.clone().into())
     } else {
-        let mut tmp_vec = vec![T::default(); list.len(py)];
+        let mut tmp_vec = vec![T::default(); list.len()];
         get_result.iter().for_each(|(i, o)| {
             tmp_vec[i] = o;
         });
-        tmp_vec.into_py_object(py)
-    };
+        Ok(PyList::new_bound(py, tmp_vec).into())
+    }
+}
+
+pub fn map_pylist<'a, T, F1, F2>(
+    py: Python,
+    list: &'a Bound<PyList>,
+    jobs: usize,
+    inplace: bool,
+    make_func: F1,
+) -> PyResult<Py<PyList>>
+where
+    T: ToPyObject
+        + std::marker::Send
+        + std::marker::Sync
+        + std::clone::Clone
+        + std::default::Default
+        + 'static,
+    F1: Fn() -> F2,
+    F2: Fn(&str) -> T + std::marker::Send + 'static,
+{
+
+    if jobs == 1 {
+        map_pylist_sequential(py, list, inplace, make_func)
+    } else {
+        map_pylist_parallel(py, list, jobs, inplace, make_func)
+    }
 }

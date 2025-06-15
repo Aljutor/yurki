@@ -1,36 +1,74 @@
-use cpython::{py_fn, py_module_initializer, PyList, PyResult, PyString, Python};
-use regex::Regex;
+use pyo3::prelude::*;
+use pyo3::types::{PyList, PyString};
+use regex::{RegexBuilder};
 
 pub mod core;
 pub mod text;
 
-py_module_initializer!(yurki, |py, m| {
-    m.add(py, "__doc__", "Fast NLP tools")?;
-    m.add(
-        py,
-        "find_in_string",
-        py_fn!(
-            py,
-            find_in_string(list: PyList, pattern: PyString, jobs: usize, inplace: bool)
-        ),
-    )?;
-    Ok(())
-});
+#[pymodule]
+mod yurki {
+    use super::*;
 
-pub fn find_in_string(
-    py: Python,
-    list: PyList,
-    pattern: PyString,
-    jobs: usize,
-    inplace: bool,
-) -> PyResult<PyList> {
-    let pattern = Regex::new(&pattern.to_string(py).unwrap()).unwrap();
+    #[pymodule]
+    mod internal {
+        use super::*;
 
-    let make_func = move || {
-        let pattern = pattern.clone();
-        move |s: &str| text::find_in_string(s, &pattern)
-    };
+        #[pyfunction]
+        fn find_regex_in_string(
+            py: Python,
+            list: &Bound<PyList>,
+            pattern: &Bound<PyString>,
+            case: bool,
+            jobs: usize,
+            inplace: bool,
+        ) -> PyResult<Py<PyList>> {
 
-    let list = core::map_pylist(py, list, jobs, inplace, make_func);
-    Ok(list)
+            let pattern = RegexBuilder::new(&pattern.to_string())
+            .case_insensitive(case)
+            .build()
+            .unwrap();
+
+            let make_func = move || {
+                let pattern = pattern.clone();
+                move |s: &str| text::find_in_string(s, &pattern)
+            };
+
+            let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
+            Ok(list)
+        }
+
+        #[pyfunction]
+        fn is_match_regex_in_string(
+            py: Python,
+            list: &Bound<PyList>,
+            pattern: &Bound<PyString>,
+            case: bool,
+            jobs: usize,
+            inplace: bool,
+        ) -> PyResult<Py<PyList>> {
+
+            let pattern = RegexBuilder::new(&pattern.to_string())
+            .case_insensitive(case)
+            .build()
+            .unwrap();
+
+            let make_func = move || {
+                let pattern = pattern.clone();
+                move |s: &str| text::is_match_in_string(s, &pattern)
+            };
+
+            let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
+            Ok(list)
+        }
+
+        /// Hack: workaround for https://github.com/PyO3/pyo3/issues/759
+        #[pymodule_init]
+        fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
+            Python::with_gil(|py| {
+                py.import_bound("sys")?
+                    .getattr("modules")?
+                    .set_item("yurki.internal", m)
+            })
+        }
+    }
 }

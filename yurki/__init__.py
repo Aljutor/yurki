@@ -1,1 +1,5 @@
-from .yurki import *  # noqa
+import yurki.regexp as regexp
+from .yurki import internal
+
+
+__all__ = ["regexp"]
