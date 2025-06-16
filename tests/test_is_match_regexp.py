@@ -65,16 +65,16 @@ class TestIsMatch:
 class TestBenchIsMatchShort:
     @pytest.fixture
     def test_data(self):
-        return generate_test_data(10)
+        return generate_test_data(1_000)
 
-    @pytest.mark.benchmark(group="find-short")
+    @pytest.mark.benchmark(group="match-short")
     @pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs={j}")
     def test_is_match_rust_short(self, jobs, benchmark, test_data):
         data, expected = test_data
         result = benchmark(yurki.internal.is_match_regex_in_string, data, PATTERN, False, jobs, inplace=False)
         assert result == expected
 
-    @pytest.mark.benchmark(group="find-short")
+    @pytest.mark.benchmark(group="match-short")
     def test_is_match_python_short(self, benchmark, test_data):
         data, expected = test_data
         result = benchmark(regex_is_match_python, data, PATTERN)
@@ -86,14 +86,14 @@ class TestBenchIsMatchMedium:
     def test_data(self):
         return generate_test_data(100_000)
 
-    @pytest.mark.benchmark(group="find-medium")
+    @pytest.mark.benchmark(group="match-medium")
     @pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs={j}")
     def test_is_match_rust_medium(self, jobs, benchmark, test_data):
         data, expected = test_data
         result = benchmark(yurki.internal.is_match_regex_in_string, data, PATTERN, False, jobs, inplace=False)
         assert result == expected
 
-    @pytest.mark.benchmark(group="find-medium")
+    @pytest.mark.benchmark(group="match-medium")
     def test_is_match_python_medium(self, benchmark, test_data):
         data, expected = test_data
         result = benchmark(regex_is_match_python, data, PATTERN)
@@ -105,14 +105,14 @@ class TestBenchIsMatchLong:
     def test_data(self):
         return generate_test_data(10_000_000)
 
-    @pytest.mark.benchmark(group="long")
+    @pytest.mark.benchmark(group="match-long")
     @pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs={j}")
     def test_is_match_rust_long(self, jobs, benchmark, test_data):
         data, expected = test_data
         result = benchmark(yurki.internal.is_match_regex_in_string, data, PATTERN, False, jobs, inplace=False)
         assert result == expected
 
-    @pytest.mark.benchmark(group="long")
+    @pytest.mark.benchmark(group="match-long")
     def test_is_match_python_long(self, benchmark, test_data):
         data, expected = test_data
         result = benchmark(regex_is_match_python, data, PATTERN)

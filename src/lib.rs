@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
-use regex::{RegexBuilder};
+use regex::RegexBuilder;
 
 pub mod core;
 pub mod text;
@@ -22,11 +22,10 @@ mod yurki {
             jobs: usize,
             inplace: bool,
         ) -> PyResult<Py<PyList>> {
-
             let pattern = RegexBuilder::new(&pattern.to_string())
-            .case_insensitive(case)
-            .build()
-            .unwrap();
+                .case_insensitive(case)
+                .build()
+                .unwrap();
 
             let make_func = move || {
                 let pattern = pattern.clone();
@@ -46,15 +45,88 @@ mod yurki {
             jobs: usize,
             inplace: bool,
         ) -> PyResult<Py<PyList>> {
-
             let pattern = RegexBuilder::new(&pattern.to_string())
-            .case_insensitive(case)
-            .build()
-            .unwrap();
+                .case_insensitive(case)
+                .build()
+                .unwrap();
 
             let make_func = move || {
                 let pattern = pattern.clone();
                 move |s: &str| text::is_match_in_string(s, &pattern)
+            };
+
+            let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
+            Ok(list)
+        }
+
+        #[pyfunction]
+        fn capture_regex_in_string(
+            py: Python,
+            list: &Bound<PyList>,
+            pattern: &Bound<PyString>,
+            case: bool,
+            jobs: usize,
+            inplace: bool,
+        ) -> PyResult<Py<PyList>> {
+            let pattern = RegexBuilder::new(&pattern.to_string())
+                .case_insensitive(case)
+                .build()
+                .unwrap();
+
+            let make_func = move || {
+                let pattern = pattern.clone();
+                move |s: &str| text::capture_regex_in_string(s, &pattern)
+            };
+
+            let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
+            Ok(list)
+        }
+
+        #[pyfunction]
+        fn split_by_regexp_string(
+            py: Python,
+            list: &Bound<PyList>,
+            pattern: &Bound<PyString>,
+            case: bool,
+            jobs: usize,
+            inplace: bool,
+        ) -> PyResult<Py<PyList>> {
+            let pattern = RegexBuilder::new(&pattern.to_string())
+                .case_insensitive(case)
+                .build()
+                .unwrap();
+
+            let make_func = move || {
+                let pattern = pattern.clone();
+                move |s: &str| text::split_by_regexp_string(s, &pattern)
+            };
+
+            let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
+            Ok(list)
+        }
+
+        #[pyfunction]
+        fn replace_regexp_in_string(
+            py: Python,
+            list: &Bound<PyList>,
+            pattern: &Bound<PyString>,
+            replacement: &Bound<PyString>,
+            count: usize,
+            case: bool,
+            jobs: usize,
+            inplace: bool,
+        ) -> PyResult<Py<PyList>> {
+            let pattern = RegexBuilder::new(&pattern.to_string())
+                .case_insensitive(case)
+                .build()
+                .unwrap();
+
+            let replacement_str = replacement.to_string();
+
+            let make_func = move || {
+                let pattern = pattern.clone();
+                let replacement = replacement_str.clone();
+                move |s: &str| text::replace_regexp_in_string(s, &pattern, &replacement, count)
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;

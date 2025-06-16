@@ -49,7 +49,6 @@ fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
     }
 }
 
-
 fn get_string_at_idx(list: *mut pyo3_ffi::PyObject, idx: usize) -> String {
     unsafe {
         let str_ptr = pyo3_ffi::PyList_GetItem(list, idx as isize);
@@ -81,28 +80,46 @@ where
     eprintln!("sequential processing, list length {}", list_len);
 
     if inplace {
+        // Modify existing list in place using direct FFI
         for i in 0..list_len {
             let string = get_string_at_idx(list_ptr.0, i);
             let result = func(&string);
             let item: PyObject = result.to_object(py);
-            list.set_item(i, item).unwrap();
+            
+            unsafe {
+                // Direct FFI call - no bounds checking, maximum performance
+                pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
+            }
         }
         Ok(list.clone().into())
     } else {
-        let mut tmp_vec = vec![T::default(); list_len];
-        for i in 0..list_len {
-            let string = get_string_at_idx(list_ptr.0, i);
-            let result = func(&string);
-            tmp_vec[i] = result;
+        unsafe {
+            // Create list with exact size - no reallocation needed
+            let result_list = pyo3_ffi::PyList_New(list_len as isize);
+            assert!(!result_list.is_null());
+
+            for i in 0..list_len {
+                let string = get_string_at_idx(list_ptr.0, i);
+                let result = func(&string);
+                let item: PyObject = result.to_object(py);
+                
+                // Direct set - PyList_SetItem steals the reference
+                pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
+            }
+
+            Ok(Py::from_owned_ptr(py, result_list))
         }
-        Ok(PyList::new_bound(py, tmp_vec).into())
     }
 }
 
-
 fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     assert!(jobs > 0, "jobs must be > 0");
-    assert!(i < jobs, "thread index {} is out of range (jobs = {})", i, jobs);
+    assert!(
+        i < jobs,
+        "thread index {} is out of range (jobs = {})",
+        i,
+        jobs
+    );
 
     let base = len / jobs;
     let rem = len % jobs;
@@ -113,7 +130,6 @@ fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
 
     (start, end)
 }
-
 
 fn map_pylist_parallel<'a, T, F1, F2>(
     py: Python,
@@ -136,9 +152,7 @@ where
     let list_ptr = PyObjectPtr(list.as_ptr());
 
     let real_jobs = jobs.min(list_len);
-    eprintln!(
-        "parallel processing: jobs {}",  real_jobs
-    );
+    eprintln!("parallel processing: jobs {}", real_jobs);
 
     // setup threading pool
     let pool = rayon::ThreadPoolBuilder::new()
@@ -181,17 +195,29 @@ where
 
     // collecting all remain results
     if inplace {
+        // Direct modification of existing list using FFI
         get_result.iter().for_each(|(i, o)| {
             let item: PyObject = o.to_object(py);
-            list.set_item(i, item).unwrap();
+            unsafe {
+                pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
+            }
         });
         Ok(list.clone().into())
     } else {
-        let mut tmp_vec = vec![T::default(); list.len()];
-        get_result.iter().for_each(|(i, o)| {
-            tmp_vec[i] = o;
-        });
-        Ok(PyList::new_bound(py, tmp_vec).into())
+        unsafe {
+            // Create list with exact size - no reallocation needed
+            let result_list = pyo3_ffi::PyList_New(list_len as isize);
+            assert!(!result_list.is_null());
+
+            // Set results directly at their indices using FFI
+            get_result.iter().for_each(|(i, o)| {
+                let item: PyObject = o.to_object(py);
+                // Direct set - PyList_SetItem steals the reference
+                pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
+            });
+
+            Ok(Py::from_owned_ptr(py, result_list))
+        }
     }
 }
 
@@ -212,7 +238,6 @@ where
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
-
     if jobs == 1 {
         map_pylist_sequential(py, list, inplace, make_func)
     } else {

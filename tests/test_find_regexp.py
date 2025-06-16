@@ -52,7 +52,7 @@ class TestFind:
 class TestBenchFindShort:
     @pytest.fixture
     def test_data(self):
-        return generate_test_data(10)
+        return generate_test_data(1_000)
 
     @pytest.mark.benchmark(group="find-short")
     @pytest.mark.parametrize("jobs", JOBS, ids=lambda j: f"jobs={j}")

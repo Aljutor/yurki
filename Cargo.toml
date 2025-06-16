@@ -26,3 +26,7 @@ rstest = "0.6.3"
 [profile.release]
 opt-level = 3
 lto = "fat"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
