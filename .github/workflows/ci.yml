@@ -14,6 +14,9 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       
@@ -23,7 +26,7 @@ jobs:
           version: "latest"
       
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python-version }}
       
       - name: Install dependencies
         run: uv sync --dev
@@ -36,6 +39,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       
@@ -45,7 +51,7 @@ jobs:
           version: "latest"
       
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python-version }}
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -60,7 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.python-version }}
           path: test-results.xml
 
   build:
@@ -73,12 +79,28 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            python-version: "3.12"
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            python-version: "3.13"
           - runner: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            python-version: "3.12"
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            python-version: "3.13"
           - runner: macos-latest
             target: x86_64-apple-darwin
+            python-version: "3.12"
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            python-version: "3.13"
           - runner: macos-latest
             target: aarch64-apple-darwin
+            python-version: "3.12"
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            python-version: "3.13"
     
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +111,7 @@ jobs:
           version: "latest"
       
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python-version }}
       
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -109,11 +131,12 @@ jobs:
           uv build --wheel --out-dir dist/
         env:
           CARGO_BUILD_TARGET: ${{ matrix.target }}
+          CARGO_PROFILE: release
       
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{ matrix.target }}-${{ matrix.python-version }}
           path: dist/
 
   check-builds:
