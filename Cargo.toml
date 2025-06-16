@@ -14,6 +14,7 @@ crossbeam-channel = "0.5"
 threadpool = "1.8"
 regex = "1.11"
 itertools = "0.13"
+bumpalo = { version = "3.14", features = ["collections"] }
 pyo3 = { version = "0.22.0", features = ["extension-module"] }
 pyo3-ffi = "0.22.0"
 

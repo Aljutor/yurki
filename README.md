@@ -20,20 +20,47 @@ maturin develop
 ```
 
 For performance testing, use release build:
+
 ```bash
 maturin develop --release
 ```
 
 ## Performance
 
-Yurki significantly outperforms Python's standard regex on large datasets:
+### Implementation Details
 
-- **Find operations**: 5x faster (2.5s vs 12.7s on 10M strings)
-- **Match operations**: 5.6x faster (2.1s vs 12.0s on 10M strings)  
-- **Capture operations**: 2.5x faster (6.8s vs 17.2s on 10M strings)
-- **Replace operations**: 1.6x faster (2.3s vs 3.6s on 10M strings)
+- **Custom Unicode Reader**: Thread-safe Python string conversion avoiding PyUnicode_AsUTF8AndSize limitations pre-Python 3.13
+- **Bump Allocator**: bumpalo-based memory allocation with 256KB initial capacity per thread and automatic reset
+- **Parallel Processing**: Rayon-based thread pool
 
-Performance scales with parallel processing using the `jobs` parameter.
+### Benchmark Results (Large Datasets)
+
+**Find Operations**:
+
+- 4 jobs: 2.0s vs Python: 12.5s (6.2x speedup)
+- 1 job: 3.2s vs Python: 12.5s (3.9x speedup)
+
+**Match Operations**:
+
+- 4 jobs: 1.8s vs Python: 11.8s (6.6x speedup)
+- 1 job: 1.9s vs Python: 11.8s (6.2x speedup)
+
+**Capture Operations**:
+
+- 4 jobs: 5.9s vs Python: 16.9s (2.9x speedup)
+- 1 job: 7.9s vs Python: 16.9s (2.1x speedup)
+
+**Replace Operations**:
+
+- 4 jobs: 2.0s vs Python: 3.6s (1.8x speedup)
+- 1 job: 2.2s vs Python: 3.6s (1.6x speedup)
+
+**Split Operations**:
+
+- 4 jobs: 5.3s vs Python: 7.0s (1.3x speedup)
+- 1 job: 4.7s vs Python: 7.0s (1.5x speedup)
+
+Note: Performance varies by operation type and dataset characteristics. Threading overhead may impact performance on small datasets.
 
 ## Usage & API
 
@@ -75,6 +102,7 @@ regexp.replace(data, pattern, replacement, inplace=True)
 ```
 
 **Parameters:**
+
 - `data`: List of strings to process
 - `pattern`: Regex pattern string  
 - `case`: Case-insensitive matching when True
