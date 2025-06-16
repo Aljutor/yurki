@@ -9,12 +9,37 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
-    "Programming Language :: Rust",
+    # Development Status
+    "Development Status :: 3 - Alpha",
+    
+    # Intended Audience
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    
+    # License
+    "License :: OSI Approved :: MIT License",
+    
+    # Programming Languages
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    
+    # Topics
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing",
+    "Topic :: Text Processing :: General",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    
+    # Operating System - macOS and Linux only
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    
+    # Performance
+    "Topic :: System :: Distributed Computing",
 ]
-dependencies = [
-    "setuptools-rust>=1.10.2",
-]
+dependencies = []
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Aljutor/yurki/issues"

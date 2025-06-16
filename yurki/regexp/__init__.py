@@ -1,14 +1,25 @@
+import os
+
 import yurki
 
 
-def find(data: list[str], pattern: str, case: bool = False, jobs: int = 1, inplace: bool = False) -> list[str]:
+def __auto_select_jobs(data: list[str]) -> int:
+    if len(data) < 1000:
+        return 1
+    else:
+        return os.cpu_count()
+
+
+def find(
+    data: list[str], pattern: str, case: bool = False, jobs: int | None = None, inplace: bool = False
+) -> list[str]:
     """Find the first regex match in each string.
 
     Args:
         data: List of strings to search in
         pattern: Regular expression pattern to search for
         case: Whether to enable case-insensitive matching. Defaults to False
-        jobs: Number of parallel jobs to use. Defaults to 1
+        jobs: Number of parallel jobs to use. Auto-selects based on data size if None
         inplace: Whether to modify the original list. Defaults to False
 
     Returns:
@@ -22,17 +33,22 @@ def find(data: list[str], pattern: str, case: bool = False, jobs: int = 1, inpla
         >>> yurki.regexp.find(['Hello', 'hello'], r'hello', case=True)
         ['Hello', 'hello']
     """
+    if jobs is None:
+        jobs = __auto_select_jobs(data)
+
     return yurki.internal.find_regex_in_string(data, pattern, case, jobs, inplace)
 
 
-def is_match(data: list[str], pattern: str, case: bool = False, jobs: int = 1, inplace: bool = False) -> list[bool]:
+def is_match(
+    data: list[str], pattern: str, case: bool = False, jobs: int | None = None, inplace: bool = False
+) -> list[bool]:
     """Check if each string matches the regex pattern.
 
     Args:
         data: List of strings to test
         pattern: Regular expression pattern to match against
         case: Whether to enable case-insensitive matching. Defaults to False
-        jobs: Number of parallel jobs to use. Defaults to 1
+        jobs: Number of parallel jobs to use. Auto-selects based on data size if None
         inplace: Whether to modify the original list. Defaults to False
 
     Returns:
@@ -45,11 +61,14 @@ def is_match(data: list[str], pattern: str, case: bool = False, jobs: int = 1, i
         >>> yurki.regexp.is_match(['Hello', 'world'], r'^H', case=True)
         [True, False]
     """
+    if jobs is None:
+        jobs = __auto_select_jobs(data)
+
     return yurki.internal.is_match_regex_in_string(data, pattern, case, jobs, inplace)
 
 
 def capture(
-    data: list[str], pattern: str, case: bool = False, jobs: int = 1, inplace: bool = False
+    data: list[str], pattern: str, case: bool = False, jobs: int | None = None, inplace: bool = False
 ) -> list[list[str]]:
     """Capture regex groups from each string.
 
@@ -57,7 +76,7 @@ def capture(
         data: List of strings to capture from
         pattern: Regular expression pattern with capture groups
         case: Whether to enable case-insensitive matching. Defaults to False
-        jobs: Number of parallel jobs to use. Defaults to 1
+        jobs: Number of parallel jobs to use. Auto-selects based on data size if None
         inplace: Whether to modify the original list. Defaults to False
 
     Returns:
@@ -79,17 +98,22 @@ def capture(
         >>> yurki.regexp.capture(['no match'], r'(\\d+)')
         [[]]
     """
+    if jobs is None:
+        jobs = __auto_select_jobs(data)
+
     return yurki.internal.capture_regex_in_string(data, pattern, case, jobs, inplace)
 
 
-def split(data: list[str], pattern: str, case: bool = False, jobs: int = 1, inplace: bool = False) -> list[list[str]]:
+def split(
+    data: list[str], pattern: str, case: bool = False, jobs: int | None = None, inplace: bool = False
+) -> list[list[str]]:
     """Split each string using a regex pattern as delimiter.
 
     Args:
         data: List of strings to split
         pattern: Regular expression pattern to use as delimiter
         case: Whether to enable case-insensitive matching. Defaults to False
-        jobs: Number of parallel jobs to use. Defaults to 1
+        jobs: Number of parallel jobs to use. Auto-selects based on data size if None
         inplace: Whether to modify the original list. Defaults to False
 
     Returns:
@@ -105,6 +129,9 @@ def split(data: list[str], pattern: str, case: bool = False, jobs: int = 1, inpl
         >>> yurki.regexp.split(['no-delimiters'], r',')
         [['no-delimiters']]
     """
+    if jobs is None:
+        jobs = __auto_select_jobs(data)
+
     return yurki.internal.split_by_regexp_string(data, pattern, case, jobs, inplace)
 
 
@@ -114,7 +141,7 @@ def replace(
     replacement: str,
     count: int = 1,
     case: bool = False,
-    jobs: int = 1,
+    jobs: int | None = None,
     inplace: bool = False,
 ) -> list[str]:
     """Replace regex matches in each string.
@@ -128,7 +155,7 @@ def replace(
             - N > 1: Replace the first N matches
             - 0: Replace all matches
         case: Whether to enable case-insensitive matching. Defaults to False
-        jobs: Number of parallel jobs to use. Defaults to 1
+        jobs: Number of parallel jobs to use. Auto-selects based on data size if None
         inplace: Whether to modify the original list. Defaults to False
 
     Returns:
@@ -150,6 +177,9 @@ def replace(
         >>> yurki.regexp.replace(['a1b2c3'], r'(\\w)(\\d)', r'$2$1', count=2)
         ['1a2bc3']
     """
+    if jobs is None:
+        jobs = __auto_select_jobs(data)
+
     return yurki.internal.replace_regexp_in_string(data, pattern, replacement, count, case, jobs, inplace)
 
 
