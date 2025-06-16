@@ -1,46 +1,58 @@
-[tool.poetry]
+[project]
 name = "yurki"
-license = "MIT"
 version = "0.1.0"
 description = "Fast NLP tools"
-
-authors = ["Semyon Bessonov <aljutor@gmail.com>"]
+authors = [
+    {name = "Semyon Bessonov", email = "aljutor@gmail.com"},
+]
+license = {text = "MIT"}
 readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "setuptools-rust>=1.10.2",
+]
 
-build = "build.py"
-include = ["Cargo.toml", "src/*.rs"]
-
-[tool.poetry.urls]
-"Bug Tracker" = "https://github.com/Aljutor/yurki"
-
-[tool.poetry.dependencies]
-python = "^3.7 || ^3.8"
-
-[tool.poetry.dev-dependencies]
-setuptools_rust = "^0.10.6"
-black = {version = "^19.10b0", allow-prereleases = true}
-pytest = "^5.4.1"
-pytest-cov = "^2.8.1"
-tox = "^3.14.6"
-mypy = "^0.770"
-pre-commit = "^2.3.0"
-isort = "^4.3.21"
-flake8 = "^3.7.9"
-pytest-benchmark = "^3.2.3"
-
-[tool.tox]
-legacy_tox_ini = """
-[tox]
-isolated_build = true
-envlist = py37, py38
-
-[testenv]
-whitelist_externals = poetry
-commands =
-    poetry install -v
-    poetry run pytest test/
-"""
+[project.urls]
+"Bug Tracker" = "https://github.com/Aljutor/yurki/issues"
 
 [build-system]
-requires = ["poetry>=0.12", "setuptools", "wheel", "setuptools-rust"]
-build-backend = "poetry.masonry.api"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "Cargo.toml"
+module-name = "yurki"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-benchmark[histogram]>=5.1.0",
+    "ruff>=0.11.13",
+]
+
+[tool.ruff]
+line-length = 119
+exclude = ["**/*.ipynb"]
+
+lint.ignore = ["E501", "C901", "F841"]
+lint.select = ["C", "E", "F", "I", "W"]
+lint.fixable = ["A", "B", "C", "D", "E", "F", "I", "W"]
+preview = true
+
+[tool.ruff.lint.isort]
+length-sort = true
+lines-after-imports = 2
+no-lines-before = ["standard-library", "local-folder"]
+known-local-folder = ["yurki"]
+split-on-trailing-comma = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
