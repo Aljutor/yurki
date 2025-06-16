@@ -2,14 +2,21 @@ use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::{PyObject, Python, ToPyObject};
+
+macro_rules! debug_println {
+    ($($arg:tt)*) => {
+        if std::env::var("DEBUG").is_ok() {
+            eprintln!($($arg)*);
+        }
+    };
+}
 // hack object to pass raw pointer for PyObject
 #[derive(Clone)]
 struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
-
-// Custom read function, to replace python's PyUnicode_AsUTF8AndSize 
+// Custom read function, to replace python's PyUnicode_AsUTF8AndSize
 // PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
 // this version does whole string conversion on rust side and kinda thread "safe"
 fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
@@ -94,7 +101,7 @@ where
     let list_ptr = PyObjectPtr(list.as_ptr());
     let func = make_func();
 
-    eprintln!("sequential processing, list length {}", list_len);
+    debug_println!("sequential processing, list length {}", list_len);
 
     if inplace {
         // Modify existing list in place using direct FFI
@@ -102,7 +109,7 @@ where
             let string = get_string_at_idx(&list_ptr, i);
             let result = func(&string);
             let item: PyObject = result.to_object(py);
-            
+
             unsafe {
                 // Direct FFI call - no bounds checking, maximum performance
                 pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
@@ -119,7 +126,7 @@ where
                 let string = get_string_at_idx(&list_ptr, i);
                 let result = func(&string);
                 let item: PyObject = result.to_object(py);
-                
+
                 // direct set, PyList_SetItem steals the reference
                 pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
             }
@@ -169,17 +176,17 @@ where
     let list_ptr = PyObjectPtr(list.as_ptr());
 
     let real_jobs = jobs.min(list_len);
-    eprintln!("parallel processing: jobs {}", real_jobs);
+    debug_println!("parallel processing: jobs {}", real_jobs);
 
     // setup threading pool
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(real_jobs)
         .thread_name(|t| format!("worker_{}", t))
         .start_handler(|t| {
-            eprintln!("worker_{} init", t);
+            debug_println!("worker_{} init", t);
         })
         .exit_handler(|t| {
-            eprintln!("worker_{} exit", t);
+            debug_println!("worker_{} exit", t);
         })
         .build()
         .unwrap();
@@ -195,9 +202,11 @@ where
 
         let func = make_func();
         pool.spawn(move || {
-            eprintln!(
+            debug_println!(
                 "thread {} started, range {}, {}",
-                job_idx, range_start, range_stop
+                job_idx,
+                range_start,
+                range_stop
             );
             for i in range_start..range_stop {
                 let string = get_string_at_idx(&list_ptr, i);
@@ -213,6 +222,7 @@ where
     // collecting all remain results
     if inplace {
         get_result.iter().for_each(|(i, o)| {
+            let _ = &list_ptr;
             let item: PyObject = o.to_object(py);
             unsafe {
                 pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
