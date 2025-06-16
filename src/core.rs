@@ -3,6 +3,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::{PyObject, Python, ToPyObject};
 
+// Memory management constants for bump allocator
+const INITIAL_BUMP_CAPACITY: usize = 256 * 1024; // 256KB
+const RESET_THRESHOLD: usize = 16 * 1024 * 1024; // 16MB 
+const FREE_THRESHOLD: usize = RESET_THRESHOLD * 2; // 32MB
+
 macro_rules! debug_println {
     ($($arg:tt)*) => {
         if std::env::var("DEBUG").is_ok() {
@@ -16,10 +21,15 @@ struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
-// Custom read function, to replace python's PyUnicode_AsUTF8AndSize
+
+// vustom read function, to replace python's PyUnicode_AsUTF8AndSize
 // PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
 // this version does whole string conversion on rust side and kinda thread "safe"
-fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
+// use bump allocator version of make_string_unsafe for performance optimization
+fn make_string_unsafe<'a>(
+    o: *mut pyo3_ffi::PyObject,
+    bump: &'a bumpalo::Bump,
+) -> bumpalo::collections::String<'a> {
     use std::slice;
 
     unsafe {
@@ -35,7 +45,7 @@ fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
         let kind = pyo3_ffi::PyUnicode_KIND(o);
         let data = pyo3_ffi::PyUnicode_DATA(o);
 
-        let mut output = Vec::with_capacity(len); // conservative;
+        let mut output = bumpalo::collections::Vec::with_capacity_in(len, bump);
 
         match kind {
             pyo3_ffi::PyUnicode_1BYTE_KIND => {
@@ -69,15 +79,19 @@ fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
             _ => panic!("Unknown Unicode kind"),
         }
 
-        String::from_utf8_unchecked(output)
+        bumpalo::collections::String::from_utf8_unchecked(output)
     }
 }
 
-fn get_string_at_idx(list_ptr: &PyObjectPtr, idx: usize) -> String {
+fn get_string_at_idx<'a>(
+    list_ptr: &PyObjectPtr,
+    idx: usize,
+    bump: &'a bumpalo::Bump,
+) -> bumpalo::collections::String<'a> {
     unsafe {
         let str_ptr = pyo3_ffi::PyList_GetItem(list_ptr.0, idx as isize);
         assert!(!str_ptr.is_null());
-        make_string_unsafe(str_ptr)
+        make_string_unsafe(str_ptr, bump)
     }
 }
 
@@ -103,11 +117,31 @@ where
 
     debug_println!("sequential processing, list length {}", list_len);
 
+    // Use bump allocator for sequential processing too
+    let mut bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+
     if inplace {
         // Modify existing list in place using direct FFI
         for i in 0..list_len {
-            let string = get_string_at_idx(&list_ptr, i);
-            let result = func(&string);
+            let current_size = bump.allocated_bytes();
+
+            if current_size > FREE_THRESHOLD {
+                drop(bump);
+                bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+                debug_println!(
+                    "Sequential: freed arena at {}MB",
+                    current_size / 1024 / 1024
+                );
+            } else if current_size > RESET_THRESHOLD {
+                bump.reset();
+                debug_println!(
+                    "Sequential: reset arena at {}MB",
+                    current_size / 1024 / 1024
+                );
+            }
+
+            let bump_string = get_string_at_idx(&list_ptr, i, &bump);
+            let result = func(bump_string.as_str());
             let item: PyObject = result.to_object(py);
 
             unsafe {
@@ -123,8 +157,25 @@ where
             assert!(!result_list.is_null());
 
             for i in 0..list_len {
-                let string = get_string_at_idx(&list_ptr, i);
-                let result = func(&string);
+                let current_size = bump.allocated_bytes();
+
+                if current_size > FREE_THRESHOLD {
+                    drop(bump);
+                    bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+                    debug_println!(
+                        "Sequential: freed arena at {}MB",
+                        current_size / 1024 / 1024
+                    );
+                } else if current_size > RESET_THRESHOLD {
+                    bump.reset();
+                    debug_println!(
+                        "Sequential: reset arena at {}MB",
+                        current_size / 1024 / 1024
+                    );
+                }
+
+                let bump_string = get_string_at_idx(&list_ptr, i, &bump);
+                let result = func(bump_string.as_str());
                 let item: PyObject = result.to_object(py);
 
                 // direct set, PyList_SetItem steals the reference
@@ -208,12 +259,43 @@ where
                 range_start,
                 range_stop
             );
+
+            // Pre-allocate bump arena for this thread
+            let mut bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+
             for i in range_start..range_stop {
-                let string = get_string_at_idx(&list_ptr, i);
-                let result = func(&string);
+                let current_size = bump.allocated_bytes();
+
+                if current_size > FREE_THRESHOLD {
+                    // Drastic action: drop and recreate to free system memory
+                    drop(bump);
+                    bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+                    debug_println!(
+                        "Thread {}: freed arena at {}MB",
+                        job_idx,
+                        current_size / 1024 / 1024
+                    );
+                } else if current_size > RESET_THRESHOLD {
+                    // Gentle reset: keeps allocated memory but resets pointer
+                    bump.reset();
+                    debug_println!(
+                        "Thread {}: reset arena at {}MB",
+                        job_idx,
+                        current_size / 1024 / 1024
+                    );
+                }
+
+                let bump_string = get_string_at_idx(&list_ptr, i, &bump);
+                let result = func(bump_string.as_str());
 
                 send_result.send((i, result)).unwrap();
             }
+
+            debug_println!(
+                "Thread {} finished, final arena size: {}MB",
+                job_idx,
+                bump.allocated_bytes() / 1024 / 1024
+            );
         });
     }
     // we don't need this channel side after init of all workers
