@@ -66,9 +66,9 @@ fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
     }
 }
 
-fn get_string_at_idx(list: *mut pyo3_ffi::PyObject, idx: usize) -> String {
+fn get_string_at_idx(list_ptr: &PyObjectPtr, idx: usize) -> String {
     unsafe {
-        let str_ptr = pyo3_ffi::PyList_GetItem(list, idx as isize);
+        let str_ptr = pyo3_ffi::PyList_GetItem(list_ptr.0, idx as isize);
         assert!(!str_ptr.is_null());
         make_string_unsafe(str_ptr)
     }
@@ -99,7 +99,7 @@ where
     if inplace {
         // Modify existing list in place using direct FFI
         for i in 0..list_len {
-            let string = get_string_at_idx(list_ptr.0, i);
+            let string = get_string_at_idx(&list_ptr, i);
             let result = func(&string);
             let item: PyObject = result.to_object(py);
             
@@ -116,7 +116,7 @@ where
             assert!(!result_list.is_null());
 
             for i in 0..list_len {
-                let string = get_string_at_idx(list_ptr.0, i);
+                let string = get_string_at_idx(&list_ptr, i);
                 let result = func(&string);
                 let item: PyObject = result.to_object(py);
                 
@@ -200,7 +200,7 @@ where
                 job_idx, range_start, range_stop
             );
             for i in range_start..range_stop {
-                let string = get_string_at_idx(list_ptr.0, i);
+                let string = get_string_at_idx(&list_ptr, i);
                 let result = func(&string);
 
                 send_result.send((i, result)).unwrap();

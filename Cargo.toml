@@ -2,26 +2,20 @@
 name = "yurki"
 version = "0.1.0"
 authors = ["Semyon Bessonov <aljutor@gmail.com>"]
-edition = "2018"
+edition = "2024"
 
 [lib]
 name = "yurki"
 crate-type = ["cdylib"]
 
 [dependencies]
-rayon = "1.1"
-crossbeam-channel = "0.4"
-threadpool = "1.0"
-regex = "1"
-itertools = "0.7.6"
-lazy_static = "1.4.0"
-widestring = "*"
+rayon = "1.10"
+crossbeam-channel = "0.5"
+threadpool = "1.8"
+regex = "1.11"
+itertools = "0.13"
 pyo3 = { version = "0.22.0", features = ["extension-module"] }
 pyo3-ffi = "0.22.0"
-
-
-[dev-dependencies]
-rstest = "0.6.3"
 
 [profile.release]
 opt-level = 3
