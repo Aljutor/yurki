@@ -8,44 +8,61 @@ struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
+
+// Custom read function, to replace python's PyUnicode_AsUTF8AndSize 
+// PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
+// this version does whole string conversion on rust side and kinda thread "safe"
 fn make_string_unsafe(o: *mut pyo3_ffi::PyObject) -> String {
-    use std::alloc::{alloc, dealloc, Layout};
-    use std::mem;
-    use widestring::U32CStr;
-
-    // it maybe possible to remove manual memory allocation here
-
-    let t_align = mem::align_of::<pyo3_ffi::Py_UCS4>();
-    let t_size = mem::size_of::<pyo3_ffi::Py_UCS4>();
+    use std::slice;
 
     unsafe {
-        // asserts for sanity
+        // Asserts for sanity
         assert!(!o.is_null());
         assert!(pyo3_ffi::PyUnicode_Check(o) != 0);
 
-        // +1 cause we use null-terminated strings
-        let length = pyo3_ffi::PyUnicode_GetLength(o) + 1;
+        if pyo3_ffi::PyUnicode_READY(o) != 0 {
+            panic!("PyUnicode_READY failed");
+        }
 
-        let layout = Layout::from_size_align(t_size * length as usize, t_align).unwrap();
-        #[allow(clippy::cast_ptr_alignment)]
-        let buffer = alloc(layout) as *mut pyo3_ffi::Py_UCS4;
-        assert!(!buffer.is_null());
+        let len = pyo3_ffi::PyUnicode_GET_LENGTH(o) as usize;
+        let kind = pyo3_ffi::PyUnicode_KIND(o);
+        let data = pyo3_ffi::PyUnicode_DATA(o);
 
-        // in good case PyUnicode_AsUCS4 falls into pure memcpy
-        // and it does not mess with python gil (it does not use pymalloc)
-        let result: *mut u32 = pyo3_ffi::PyUnicode_AsUCS4(o, buffer, length, 1);
-        assert!(!result.is_null());
+        let mut output = Vec::with_capacity(len); // conservative;
 
-        // from_ptr_with_nul accepts len of string without null-terminator
-        // in general case we should get valid utf-8 string from python
+        match kind {
+            pyo3_ffi::PyUnicode_1BYTE_KIND => {
+                let chars = slice::from_raw_parts(data as *const u8, len);
+                for &ch in chars {
+                    if ch < 0x80 {
+                        output.push(ch);
+                    } else {
+                        let c = std::char::from_u32(ch as u32).unwrap();
+                        let mut buf = [0u8; 4];
+                        output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                    }
+                }
+            }
+            pyo3_ffi::PyUnicode_2BYTE_KIND => {
+                let chars = slice::from_raw_parts(data as *const u16, len);
+                for &ch in chars {
+                    let c = std::char::from_u32(ch as u32).unwrap();
+                    let mut buf = [0u8; 4];
+                    output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            pyo3_ffi::PyUnicode_4BYTE_KIND => {
+                let chars = slice::from_raw_parts(data as *const u32, len);
+                for &ch in chars {
+                    let c = std::char::from_u32(ch).unwrap();
+                    let mut buf = [0u8; 4];
+                    output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            _ => panic!("Unknown Unicode kind"),
+        }
 
-        #[allow(clippy::wrong_self_convention)]
-        let string = U32CStr::from_ptr_with_nul(buffer, (length - 1) as usize)
-            .to_string()
-            .unwrap();
-
-        dealloc(buffer as *mut u8, layout);
-        string
+        String::from_utf8_unchecked(output)
     }
 }
 
@@ -94,7 +111,7 @@ where
         Ok(list.clone().into())
     } else {
         unsafe {
-            // Create list with exact size - no reallocation needed
+            // create list with exact size
             let result_list = pyo3_ffi::PyList_New(list_len as isize);
             assert!(!result_list.is_null());
 
@@ -103,7 +120,7 @@ where
                 let result = func(&string);
                 let item: PyObject = result.to_object(py);
                 
-                // Direct set - PyList_SetItem steals the reference
+                // direct set, PyList_SetItem steals the reference
                 pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
             }
 
@@ -159,10 +176,10 @@ where
         .num_threads(real_jobs)
         .thread_name(|t| format!("worker_{}", t))
         .start_handler(|t| {
-            eprintln!("thread{} init", t);
+            eprintln!("worker_{} init", t);
         })
         .exit_handler(|t| {
-            eprintln!("thread{} exit", t);
+            eprintln!("worker_{} exit", t);
         })
         .build()
         .unwrap();
@@ -195,7 +212,6 @@ where
 
     // collecting all remain results
     if inplace {
-        // Direct modification of existing list using FFI
         get_result.iter().for_each(|(i, o)| {
             let item: PyObject = o.to_object(py);
             unsafe {
@@ -205,14 +221,14 @@ where
         Ok(list.clone().into())
     } else {
         unsafe {
-            // Create list with exact size - no reallocation needed
+            // create list with exact size
+            // it's imporant to fully init it
             let result_list = pyo3_ffi::PyList_New(list_len as isize);
             assert!(!result_list.is_null());
 
-            // Set results directly at their indices using FFI
             get_result.iter().for_each(|(i, o)| {
                 let item: PyObject = o.to_object(py);
-                // Direct set - PyList_SetItem steals the reference
+                // Direct set, PyList_SetItem steals the reference
                 pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
             });
 
