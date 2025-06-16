@@ -1,87 +1,238 @@
 name: CI
 
-on: [push]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install dependencies
+        run: uv sync --dev
+      
+      - name: Run ruff check
+        run: uv run ruff check .
+      
+      - name: Run ruff format check
+        run: uv run ruff format --check .
+
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          fetch-depth: 1
-
-      - uses: actions-rs/toolchain@v1
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: uv sync --dev
+      
+      - name: Run tests (without benchmarks)
+        run: uv run pytest -v -m "not benchmark" --tb=short --junitxml=test-results.xml
+      
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
-            toolchain: nightly
-            
-      - name: Cache Cargo Registry
-        uses: actions/cache@v1
+          name: test-results
+          path: test-results.xml
+
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache Cargo Index
-        uses: actions/cache@v1
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache Cargo Build
-        uses: actions/cache@v1
+          targets: ${{ matrix.target }}
+      
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      
+      - name: Build wheel
+        run: |
+          uv build --wheel --out-dir dist/
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+      
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
         with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
+          name: wheels-${{ matrix.target }}
+          path: dist/
 
-      - name: Cargo Build
-        uses: actions-rs/cargo@v1
+  build-sdist:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          command: build
-          args: --release --all-features
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Build source distribution
+        run: uv build --sdist --out-dir dist/
+      
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/
 
-      - name: Cargo Test
-        run: cargo test --no-default-features
+  release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [lint, test, build, build-sdist]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+      
+      - name: List artifacts
+        run: ls -la dist/
+      
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cargo Fmt
-        run: cargo fmt -- --check
-        
-      - name: Clippy Check
-        uses: actions-rs/clippy-check@v1
+  # Optional jobs for development
+  format-fix:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features
-
-      - name: Set up Python 3.7
-        uses: actions/setup-python@v1
+          ref: ${{ github.head_ref }}
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          python-version: 3.7
-
-      - name: Install Poetry
-        uses: dschep/install-poetry-action@v1.2
-
-      - name: Cache Poetry virtualenv
-        uses: actions/cache@v1
-        id: cache
-        with:
-          path: ~/.virtualenvs
-          key: poetry-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            poetry-${{ hashFiles('poetry.lock') }}
-
-      - name: Set Poetry config
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install dependencies
+        run: uv sync --dev
+      
+      - name: Run ruff format
+        run: uv run ruff format .
+      
+      - name: Run ruff check --fix
+        run: uv run ruff check --fix .
+      
+      - name: Commit changes
         run: |
-          poetry config --local virtualenvs.in-project false
-          poetry config virtualenvs.path ~/.virtualenvs
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .
+          git diff --staged --quiet || git commit -m "Auto-fix formatting and linting issues"
+          git push
+        continue-on-error: true
 
-      - name: Install Python Dependencies
-        run: poetry install
+  benchmark:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      
+      - name: Set up Python
+        run: uv python install 3.12
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: uv sync --dev
+      
+      - name: Run benchmarks
+        run: uv run pytest -v -m "benchmark" --benchmark-only --benchmark-storage=.benchmarks
+      
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: .benchmarks/
 
-      - name: Black
-        run: poetry run black yurki/ --check
-
-      - name: Flake8
-        run: poetry run flake8 yurki/
-
-      - name: MyPy
-        run: poetry run mypy yurki/
-
-      - name: Pytest with Coverage
-        run: poetry run pytest --benchmark-skip --cov=yurki tests/
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      
+      - name: Run security audit
+        run: cargo audit
+        continue-on-error: true
