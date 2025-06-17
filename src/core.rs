@@ -1,7 +1,8 @@
 use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::{PyObject, Python, ToPyObject};
+use pyo3::BoundObject;
+use pyo3::{PyObject, Python};
 
 // Memory management constants for bump allocator
 const INITIAL_BUMP_CAPACITY: usize = 256 * 1024; // 256KB
@@ -22,10 +23,10 @@ unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
 
-// vustom read function, to replace python's PyUnicode_AsUTF8AndSize
+// Custom read function, to replace python's PyUnicode_AsUTF8AndSize
 // PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
 // this version does whole string conversion on rust side and kinda thread "safe"
-// use bump allocator version of make_string_unsafe for performance optimization
+// also, it uses bump allocator for performance optimization
 fn make_string_unsafe<'a>(
     o: *mut pyo3_ffi::PyObject,
     bump: &'a bumpalo::Bump,
@@ -95,19 +96,21 @@ fn get_string_at_idx<'a>(
     }
 }
 
-fn map_pylist_sequential<'a, T, F1, F2>(
-    py: Python,
-    list: &'a Bound<PyList>,
+fn map_pylist_sequential<'py, 'a, T, F1, F2>(
+    py: Python<'py>,
+    list: &'a Bound<'py, PyList>,
     inplace: bool,
     make_func: F1,
 ) -> PyResult<Py<PyList>>
 where
-    T: ToPyObject
+    T: pyo3::conversion::IntoPyObject<'py>
         + std::marker::Send
         + std::marker::Sync
         + std::clone::Clone
         + std::default::Default
         + 'static,
+    T::Error: std::convert::Into<pyo3::PyErr>
+        + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -142,7 +145,7 @@ where
 
             let bump_string = get_string_at_idx(&list_ptr, i, &bump);
             let result = func(bump_string.as_str());
-            let item: PyObject = result.to_object(py);
+            let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
             unsafe {
                 // Direct FFI call - no bounds checking, maximum performance
@@ -176,7 +179,7 @@ where
 
                 let bump_string = get_string_at_idx(&list_ptr, i, &bump);
                 let result = func(bump_string.as_str());
-                let item: PyObject = result.to_object(py);
+                let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
                 // direct set, PyList_SetItem steals the reference
                 pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
@@ -206,20 +209,23 @@ fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     (start, end)
 }
 
-fn map_pylist_parallel<'a, T, F1, F2>(
-    py: Python,
-    list: &'a Bound<PyList>,
+#[cfg(not(all(Py_3_13, py_sys_config="Py_GIL_DISABLED")))]
+fn map_pylist_parallel<'py, 'a, T, F1, F2>(
+    py: Python<'py>,
+    list: &'a Bound<'py, PyList>,
     jobs: usize,
     inplace: bool,
     make_func: F1,
 ) -> PyResult<Py<PyList>>
 where
-    T: ToPyObject
+    T: pyo3::conversion::IntoPyObject<'py>
         + std::marker::Send
         + std::marker::Sync
         + std::clone::Clone
         + std::default::Default
         + 'static,
+    T::Error: std::convert::Into<pyo3::PyErr>
+        + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -304,8 +310,7 @@ where
     // collecting all remain results
     if inplace {
         get_result.iter().for_each(|(i, o)| {
-            let _ = &list_ptr;
-            let item: PyObject = o.to_object(py);
+            let item: PyObject = o.into_pyobject(py).unwrap().into_any().unbind();
             unsafe {
                 pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
             }
@@ -319,7 +324,7 @@ where
             assert!(!result_list.is_null());
 
             get_result.iter().for_each(|(i, o)| {
-                let item: PyObject = o.to_object(py);
+                let item: PyObject = o.into_pyobject(py).unwrap().into_any().unbind();
                 // Direct set, PyList_SetItem steals the reference
                 pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
             });
@@ -329,20 +334,22 @@ where
     }
 }
 
-pub fn map_pylist<'a, T, F1, F2>(
-    py: Python,
-    list: &'a Bound<PyList>,
+pub fn map_pylist<'py, 'a, T, F1, F2>(
+    py: Python<'py>,
+    list: &'a Bound<'py, PyList>,
     jobs: usize,
     inplace: bool,
     make_func: F1,
 ) -> PyResult<Py<PyList>>
 where
-    T: ToPyObject
+    T: pyo3::conversion::IntoPyObject<'py>
         + std::marker::Send
         + std::marker::Sync
         + std::clone::Clone
         + std::default::Default
         + 'static,
+    T::Error: std::convert::Into<pyo3::PyErr>
+        + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {

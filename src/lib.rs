@@ -7,11 +7,11 @@ use regex::RegexBuilder;
 pub mod core;
 pub mod text;
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 mod yurki {
     use super::*;
 
-    #[pymodule]
+    #[pymodule(gil_used = false)]
     mod internal {
         use super::*;
 
@@ -139,7 +139,7 @@ mod yurki {
         #[pymodule_init]
         fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
             Python::with_gil(|py| {
-                py.import_bound("sys")?
+                Python::import(py, "sys")?
                     .getattr("modules")?
                     .set_item("yurki.internal", m)
             })
