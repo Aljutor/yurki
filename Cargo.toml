@@ -15,8 +15,11 @@ threadpool = "1.8"
 regex = "1.11"
 itertools = "0.14"
 bumpalo = { version = "3.14", features = ["collections"] }
-pyo3 = { version = "0.24.2", features = ["extension-module"] }
-pyo3-ffi = "0.24.2"
+pyo3 = { version = "0.25.1", features = ["extension-module"] }
+pyo3-ffi = "0.25.1"
+
+[build-dependencies]
+pyo3-build-config = "0.25.1"
 
 [profile.release]
 opt-level = 3
