@@ -1,4 +1,6 @@
+
 #![allow(unsafe_op_in_unsafe_fn)]
+#![feature(portable_simd)]
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
@@ -6,6 +8,8 @@ use regex::RegexBuilder;
 
 pub mod core;
 pub mod text;
+pub mod simd_string;
+pub mod fast_string;
 
 #[pymodule(gil_used = false)]
 mod yurki {

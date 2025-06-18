@@ -4,6 +4,8 @@ use pyo3::types::PyList;
 use pyo3::BoundObject;
 use pyo3::{PyObject, Python};
 
+use crate::simd_string::make_string_fast;
+
 // Memory management constants for bump allocator
 const INITIAL_BUMP_CAPACITY: usize = 256 * 1024; // 256KB
 const RESET_THRESHOLD: usize = 16 * 1024 * 1024; // 16MB 
@@ -23,66 +25,6 @@ unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
 
-// Custom read function, to replace python's PyUnicode_AsUTF8AndSize
-// PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
-// this version does whole string conversion on rust side and kinda thread "safe"
-// also, it uses bump allocator for performance optimization
-fn make_string_unsafe<'a>(
-    o: *mut pyo3_ffi::PyObject,
-    bump: &'a bumpalo::Bump,
-) -> bumpalo::collections::String<'a> {
-    use std::slice;
-
-    unsafe {
-        // Asserts for sanity
-        assert!(!o.is_null());
-        assert!(pyo3_ffi::PyUnicode_Check(o) != 0);
-
-        if pyo3_ffi::PyUnicode_READY(o) != 0 {
-            panic!("PyUnicode_READY failed");
-        }
-
-        let len = pyo3_ffi::PyUnicode_GET_LENGTH(o) as usize;
-        let kind = pyo3_ffi::PyUnicode_KIND(o);
-        let data = pyo3_ffi::PyUnicode_DATA(o);
-
-        let mut output = bumpalo::collections::Vec::with_capacity_in(len, bump);
-
-        match kind {
-            pyo3_ffi::PyUnicode_1BYTE_KIND => {
-                let chars = slice::from_raw_parts(data as *const u8, len);
-                for &ch in chars {
-                    if ch < 0x80 {
-                        output.push(ch);
-                    } else {
-                        let c = std::char::from_u32(ch as u32).unwrap();
-                        let mut buf = [0u8; 4];
-                        output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                    }
-                }
-            }
-            pyo3_ffi::PyUnicode_2BYTE_KIND => {
-                let chars = slice::from_raw_parts(data as *const u16, len);
-                for &ch in chars {
-                    let c = std::char::from_u32(ch as u32).unwrap();
-                    let mut buf = [0u8; 4];
-                    output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                }
-            }
-            pyo3_ffi::PyUnicode_4BYTE_KIND => {
-                let chars = slice::from_raw_parts(data as *const u32, len);
-                for &ch in chars {
-                    let c = std::char::from_u32(ch).unwrap();
-                    let mut buf = [0u8; 4];
-                    output.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                }
-            }
-            _ => panic!("Unknown Unicode kind"),
-        }
-
-        bumpalo::collections::String::from_utf8_unchecked(output)
-    }
-}
 
 fn get_string_at_idx<'a>(
     list_ptr: &PyObjectPtr,
@@ -92,7 +34,7 @@ fn get_string_at_idx<'a>(
     unsafe {
         let str_ptr = pyo3_ffi::PyList_GetItem(list_ptr.0, idx as isize);
         assert!(!str_ptr.is_null());
-        make_string_unsafe(str_ptr, bump)
+        make_string_fast(str_ptr, bump)
     }
 }
 
