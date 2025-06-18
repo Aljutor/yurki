@@ -6,6 +6,7 @@ use regex::RegexBuilder;
 
 pub mod core;
 pub mod text;
+pub mod v2;
 
 #[pymodule(gil_used = false)]
 mod yurki {
@@ -14,6 +15,24 @@ mod yurki {
     #[pymodule(gil_used = false)]
     mod internal {
         use super::*;
+
+        #[pyfunction]
+        fn copy_string_list_v2(
+            py: Python,
+            list: &Bound<PyList>,
+            jobs: usize,
+        ) -> PyResult<Py<PyList>> {
+            let list = list.clone().unbind();
+            py.allow_threads(|| v2::copy_string_list(list, jobs))
+        }
+
+        #[pyfunction]
+        fn copy_string_list(py: Python, list: &Bound<PyList>, jobs: usize) -> PyResult<Py<PyList>> {
+            let make_func = move || move |s: &str| text::copy_string(s);
+
+            let list = core::map_pylist(py, list, jobs, false, make_func)?;
+            Ok(list)
+        }
 
         #[pyfunction]
         fn find_regex_in_string(
@@ -29,8 +48,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::find_in_string(s, &pattern)
             };
 
@@ -52,8 +73,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::is_match_in_string(s, &pattern)
             };
 
@@ -75,8 +98,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::capture_regex_in_string(s, &pattern)
             };
 
@@ -98,8 +123,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::split_by_regexp_string(s, &pattern)
             };
 
@@ -122,12 +149,14 @@ mod yurki {
                 .case_insensitive(case)
                 .build()
                 .unwrap();
+            let pattern = &*Box::leak(Box::new(pattern));
 
             let replacement_str = replacement.to_string();
+            let replacement_str = &*Box::leak(Box::new(replacement_str));
 
             let make_func = move || {
-                let pattern = pattern.clone();
-                let replacement = replacement_str.clone();
+                let pattern = pattern;
+                let replacement = replacement_str;
                 move |s: &str| text::replace_regexp_in_string(s, &pattern, &replacement, count)
             };
 

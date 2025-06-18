@@ -1,7 +1,7 @@
+use pyo3::BoundObject;
 use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::BoundObject;
 use pyo3::{PyObject, Python};
 
 // Memory management constants for bump allocator
@@ -21,7 +21,6 @@ macro_rules! debug_println {
 struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
-
 
 // Custom read function, to replace python's PyUnicode_AsUTF8AndSize
 // PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
@@ -109,8 +108,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -209,7 +207,7 @@ fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     (start, end)
 }
 
-#[cfg(not(all(Py_3_13, py_sys_config="Py_GIL_DISABLED")))]
+#[cfg(not(all(Py_3_13, py_sys_config = "Py_GIL_DISABLED")))]
 fn map_pylist_parallel<'py, 'a, T, F1, F2>(
     py: Python<'py>,
     list: &'a Bound<'py, PyList>,
@@ -224,8 +222,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -348,8 +345,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {

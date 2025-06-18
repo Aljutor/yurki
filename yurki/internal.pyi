@@ -2,6 +2,30 @@
 
 from typing import List
 
+def copy_string_list_v2(list: List[str], jobs: int = 1) -> List[str]:
+    """Copy a list of strings.
+
+    Args:
+        list: List of strings to copy
+        jobs: Number of parallel workers
+
+    Returns:
+        New list with copied strings
+    """
+    ...
+
+def copy_string_list(list: List[str], jobs: int = 1) -> List[str]:
+    """Copy a list of strings.
+
+    Args:
+        list: List of strings to copy
+        jobs: Number of parallel workers
+
+    Returns:
+        New list with copied strings
+    """
+    ...
+
 def find_regex_in_string(
     list: List[str],
     pattern: str,

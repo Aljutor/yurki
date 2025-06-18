@@ -17,8 +17,9 @@ Examples:
     ['hi world', 'test 123']
 """
 
+import yurki.test as test
 import yurki.regexp as regexp
 from .yurki import internal
 
 
-__all__ = ["regexp", "internal"]
+__all__ = ["regexp", "internal", "test"]

@@ -17,6 +17,7 @@ itertools = "0.14"
 bumpalo = { version = "3.14", features = ["collections"] }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
 pyo3-ffi = "0.25.1"
+smallvec = "1.15.1"
 
 [build-dependencies]
 pyo3-build-config = "0.25.1"
