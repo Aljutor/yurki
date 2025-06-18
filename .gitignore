@@ -153,3 +153,9 @@ fabric.properties
 
 # MacOS
 .DS_Store
+
+# Nix Devenv
+.envrc
+.devenv
+.direnv
+devenv.*

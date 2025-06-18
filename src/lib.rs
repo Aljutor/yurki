@@ -6,6 +6,7 @@ use regex::RegexBuilder;
 
 pub mod core;
 pub mod text;
+pub mod v2;
 
 #[pymodule(gil_used = false)]
 mod yurki {
@@ -14,6 +15,24 @@ mod yurki {
     #[pymodule(gil_used = false)]
     mod internal {
         use super::*;
+
+        #[pyfunction]
+        fn copy_string_list_v2(
+            py: Python,
+            list: &Bound<PyList>,
+            jobs: usize,
+        ) -> PyResult<Py<PyList>> {
+            let list = list.clone().unbind();
+            py.allow_threads(|| v2::copy_string_list(list, jobs))
+        }
+
+        #[pyfunction]
+        fn copy_string_list(py: Python, list: &Bound<PyList>, jobs: usize) -> PyResult<Py<PyList>> {
+            let make_func = move || move |s: &str| text::copy_string(s);
+
+            let list = core::map_pylist(py, list, jobs, false, make_func)?;
+            Ok(list)
+        }
 
         #[pyfunction]
         fn find_regex_in_string(

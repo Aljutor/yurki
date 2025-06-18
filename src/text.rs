@@ -1,5 +1,9 @@
 use regex::Regex;
 
+pub fn copy_string(string: &str) -> String {
+    string.to_string()
+}
+
 pub fn find_in_string(string: &str, pattern: &Regex) -> String {
     let mat = pattern.find(string);
     mat.map(|x| x.as_str()).unwrap_or("").to_string()
