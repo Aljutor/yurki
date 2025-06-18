@@ -29,8 +29,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::find_in_string(s, &pattern)
             };
 
@@ -52,8 +54,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::is_match_in_string(s, &pattern)
             };
 
@@ -75,8 +79,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::capture_regex_in_string(s, &pattern)
             };
 
@@ -98,8 +104,10 @@ mod yurki {
                 .build()
                 .unwrap();
 
+            let pattern = &*Box::leak(Box::new(pattern));
+
             let make_func = move || {
-                let pattern = pattern.clone();
+                let pattern = pattern;
                 move |s: &str| text::split_by_regexp_string(s, &pattern)
             };
 
@@ -122,12 +130,14 @@ mod yurki {
                 .case_insensitive(case)
                 .build()
                 .unwrap();
+            let pattern = &*Box::leak(Box::new(pattern));
 
             let replacement_str = replacement.to_string();
+            let replacement_str = &*Box::leak(Box::new(replacement_str));
 
             let make_func = move || {
-                let pattern = pattern.clone();
-                let replacement = replacement_str.clone();
+                let pattern = pattern;
+                let replacement = replacement_str;
                 move |s: &str| text::replace_regexp_in_string(s, &pattern, &replacement, count)
             };
 
