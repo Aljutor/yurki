@@ -6,6 +6,7 @@ use regex::RegexBuilder;
 
 pub mod core;
 pub mod text;
+pub mod pystring;
 
 #[pymodule(gil_used = false)]
 mod yurki {
