@@ -1,10 +1,10 @@
+use pyo3::BoundObject;
 use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::BoundObject;
 use pyo3::{PyObject, Python};
 
-use crate::simd_string::make_string_fast;
+use crate::fast_string::make_string_fast;
 
 // Memory management constants for bump allocator
 const INITIAL_BUMP_CAPACITY: usize = 256 * 1024; // 256KB
@@ -24,13 +24,7 @@ struct PyObjectPtr(*mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
 
-
-
-fn get_string_at_idx<'a>(
-    list_ptr: &PyObjectPtr,
-    idx: usize,
-    bump: &'a bumpalo::Bump,
-) -> bumpalo::collections::String<'a> {
+fn get_string_at_idx<'a>(list_ptr: &PyObjectPtr, idx: usize, bump: &'a bumpalo::Bump) -> &'a str {
     unsafe {
         let str_ptr = pyo3_ffi::PyList_GetItem(list_ptr.0, idx as isize);
         assert!(!str_ptr.is_null());
@@ -51,8 +45,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -86,7 +79,7 @@ where
             }
 
             let bump_string = get_string_at_idx(&list_ptr, i, &bump);
-            let result = func(bump_string.as_str());
+            let result = func(bump_string);
             let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
             unsafe {
@@ -120,7 +113,7 @@ where
                 }
 
                 let bump_string = get_string_at_idx(&list_ptr, i, &bump);
-                let result = func(bump_string.as_str());
+                let result = func(bump_string);
                 let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
                 // direct set, PyList_SetItem steals the reference
@@ -151,7 +144,7 @@ fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     (start, end)
 }
 
-#[cfg(not(all(Py_3_13, py_sys_config="Py_GIL_DISABLED")))]
+#[cfg(not(all(Py_3_13, py_sys_config = "Py_GIL_DISABLED")))]
 fn map_pylist_parallel<'py, 'a, T, F1, F2>(
     py: Python<'py>,
     list: &'a Bound<'py, PyList>,
@@ -166,8 +159,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
@@ -234,7 +226,7 @@ where
                 }
 
                 let bump_string = get_string_at_idx(&list_ptr, i, &bump);
-                let result = func(bump_string.as_str());
+                let result = func(bump_string);
 
                 send_result.send((i, result)).unwrap();
             }
@@ -290,8 +282,7 @@ where
         + std::clone::Clone
         + std::default::Default
         + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr>
-        + std::fmt::Debug,
+    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
     F1: Fn() -> F2,
     F2: Fn(&str) -> T + std::marker::Send + 'static,
 {
