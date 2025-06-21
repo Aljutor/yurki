@@ -4,9 +4,28 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 use regex::RegexBuilder;
 
+//
+// ---------------------------------------------------------------------------
+// Unified Debug System
+// ---------------------------------------------------------------------------
+//
+
+#[cfg(feature = "debug-yurki-internal")]
+macro_rules! debug_println {
+    ($($arg:tt)*) => { eprintln!($($arg)*) };
+}
+
+#[cfg(not(feature = "debug-yurki-internal"))]
+macro_rules! debug_println {
+    ($($arg:tt)*) => {};
+}
+
+// Export the macro so it can be used in other modules
+pub(crate) use debug_println;
+
 pub mod core;
-pub mod text;
 pub mod pystring;
+pub mod text;
 
 #[pymodule(gil_used = false)]
 mod yurki {
@@ -139,11 +158,13 @@ mod yurki {
         /// Hack: workaround for https://github.com/PyO3/pyo3/issues/759
         #[pymodule_init]
         fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-            Python::with_gil(|py| {
+            let _ = Python::with_gil(|py| {
                 Python::import(py, "sys")?
                     .getattr("modules")?
                     .set_item("yurki.internal", m)
-            })
+            });
+
+            unsafe { pystring::init_faststring_type(m.as_ptr()) }
         }
     }
 }

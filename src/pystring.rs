@@ -1,92 +1,246 @@
-// src/lib.rs
-#![allow(clippy::cast_possible_truncation, non_camel_case_types)]
+use mimalloc::MiMalloc;
+use pyo3::{ffi, prelude::*};
+use std::alloc::{GlobalAlloc, Layout};
+use std::{ptr,mem};
 
-use pyo3::ffi;
-use std::{
-    alloc::{alloc_zeroed, handle_alloc_error, Layout},
-    mem, ptr,
-};
+// Import the unified debug system
+use crate::debug_println;
+// Memory allocation
 
-/// Build a *compact* Unicode (`str`) object manually, using Rust’s global
-/// allocator.  Works on CPython 3.12 **and** 3.13-dev.
-///
-/// # Safety
-/// * Returns a `*mut PyObject` with refcount = 1.  Wrap it exactly **once**
-///   with `Py::from_owned_ptr` or call `Py_DECREF` manually.
-/// * Relies on public PEP-393 structs; once CPython makes them opaque this
-///   trick will break.
-pub unsafe fn make_compact_unicode(text: &str) -> *mut ffi::PyObject {
-    // ── decide element size / PyUnicode_KIND ──────────────────────────────
-    let (kind_bits, elem_sz) = match text.chars().map(|c| c as u32).max().unwrap_or(0) {
-        0x0000..=0x00FF => (ffi::PyUnicode_1BYTE_KIND as u32, 1),
-        0x0100..=0xFFFF => (ffi::PyUnicode_2BYTE_KIND as u32, 2),
-        _               => (ffi::PyUnicode_4BYTE_KIND as u32, 4),
-    };
-    let char_len = text.chars().count();
+/// FastString allocator instance
+static FAST_STRING_ALLOCATOR: MiMalloc = MiMalloc;
 
-    // ── allocate header + payload with Rust allocator ─────────────────────
-    let header = mem::size_of::<ffi::PyCompactUnicodeObject>();
-    let total  = header + (char_len + 1) * elem_sz;               // +NUL
-    let layout = Layout::from_size_align(total, mem::align_of::<usize>()).unwrap();
-    let raw = alloc_zeroed(layout) as *mut ffi::PyCompactUnicodeObject;
-    if raw.is_null() {
-        handle_alloc_error(layout);
+/// Allocate bytes with usize alignment.
+#[inline(always)]
+unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
+    let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    GlobalAlloc::alloc(&FAST_STRING_ALLOCATOR, layout)
+}
+
+/// Free block with original size for layout consistency.
+#[inline(always)]
+unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
+    let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    GlobalAlloc::dealloc(&FAST_STRING_ALLOCATOR, ptr as *mut u8, layout)
+}
+
+// FastString type definition
+
+static mut FASTSTRING_TYPE: *mut ffi::PyTypeObject = std::ptr::null_mut();
+
+unsafe extern "C" fn faststring_alloc(
+    type_object: *mut ffi::PyTypeObject,
+    item_count: ffi::Py_ssize_t,
+) -> *mut ffi::PyObject {
+    let size =
+        ((*type_object).tp_basicsize as isize + item_count * (*type_object).tp_itemsize as isize) as usize;
+    let p = internal_alloc_bytes(size) as *mut ffi::PyObject;
+    if p.is_null() {
+        ffi::PyErr_NoMemory();
+    }
+    p
+}
+/// tp_dealloc runs before tp_free
+unsafe extern "C" fn faststring_dealloc(obj: *mut ffi::PyObject) {
+    debug_println!("faststring_dealloc ▶ {:?}", obj);
+    // Nothing special to clean for a plain str
+    ffi::Py_TYPE(obj).as_ref().unwrap().tp_free.unwrap()(obj as _);
+    debug_println!("faststring_dealloc ◀");
+}
+
+/// tp_free for yurki.FastString with debug tracing
+unsafe extern "C" fn faststring_free(obj: *mut std::ffi::c_void) {
+    debug_println!("faststring_free ▶ called with obj {:p}", obj);
+    if obj.is_null() {
+        panic!("faststring_free: obj is NULL");
     }
 
-    // ── initialise the PyObject header portably (sets refcnt & ob_type) ──
-    ffi::PyObject_Init(raw.cast(), core::ptr::addr_of_mut!(ffi::PyUnicode_Type));
+    // Header & sanity check
+    let py_object = obj as *mut ffi::PyObject;
+    let faststring_type = ptr::read(ptr::addr_of!(FASTSTRING_TYPE));
+    debug_println!(
+        "  ob_type = {:p}  FASTSTRING_TYPE = {:p}",
+        (*py_object).ob_type,
+        faststring_type
+    );
 
-    // convenience aliases
-    let ascii   = &mut (*raw)._base;            // embedded PyASCIIObject
-    let payload = (raw as *mut u8).add(header); // canonical code-point data
+    if faststring_type.is_null() || (*py_object).ob_type != faststring_type {
+        debug_println!("  not a FastString instance – returning");
+        return;
+    }
 
-    // ── fill remaining PyASCIIObject fields ───────────────────────────────
-    ascii.length = char_len as ffi::Py_ssize_t;
-    ascii.hash   = -1;                          // hash not computed
+    let _refcnt = ptr::read(&(*py_object).ob_refcnt as *const _ as *const ffi::Py_ssize_t);
+    debug_println!("  refcnt  = {}", _refcnt);
 
-    // bit-field: interned(2) | kind(3) | compact(1) | ascii(1) | ready(1)
-    let flags: u32 = (kind_bits << 2) | (1 << 5) | /*compact*/ (0 << 6) | (1 << 7);
-    ptr::write(&mut ascii.state as *mut _ as *mut u32, flags);
+    // Decode string layout
+    let ascii = obj as *mut ffi::PyASCIIObject;
+    let character_count = (*ascii).length as usize;
+    let flags = ptr::read(&(*ascii).state as *const _ as *const u32);
+    let element_size = match (flags >> 2) & 0b111 {
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    };
+    let _is_ascii = ((flags >> 5) & 1) == 1;
 
-    // ── PyCompactUnicodeObject extras (same 3.12 → 3.13) ──────────────────
-    (*raw).utf8_length = 0;
-    (*raw).utf8        = ptr::null_mut();
+    debug_println!(
+        "  character_count = {character_count}, element_size = {element_size}, flags = 0x{flags:x}, is_ascii={_is_ascii}"
+    );
 
-    // ── copy canonical data right after the header ────────────────────────
-    match elem_sz {
-        1 => {
-            for (i, b) in text.bytes().enumerate()     { *payload.add(i) = b; }
-            *payload.add(char_len) = 0;
-        }
+    // Compute total allocation size
+    let header_size = (*(*ascii).ob_base.ob_type).tp_basicsize as usize;
+    let total_size = header_size + (character_count + 1) * element_size;
+
+    debug_println!("  header_size (tp_basicsize) = {header_size}");
+    debug_println!("  total_size to free         = {total_size}");
+
+    if total_size == 0 || total_size > 10_000_000 {
+        panic!("faststring_free: suspicious total_size = {total_size}");
+    }
+
+    // Free memory
+    debug_println!("  calling internal_free_bytes …");
+    internal_free_bytes(obj, total_size);
+    debug_println!("faststring_free ◀ finished (freed {:p})", obj);
+}
+
+/// Initialize FastString type for module.
+pub unsafe fn init_faststring_type(m: *mut ffi::PyObject) -> PyResult<()> {
+    let mut slots = [
+        ffi::PyType_Slot {
+            slot: ffi::Py_tp_base as i32,
+            pfunc: &raw mut ffi::PyUnicode_Type as *mut _ as *mut _,
+        },
+        ffi::PyType_Slot {
+            slot: ffi::Py_tp_new as i32,
+            pfunc: std::ptr::null_mut(),
+        }, // Prevent external instantiation
+        ffi::PyType_Slot {
+            slot: ffi::Py_tp_alloc as i32,
+            pfunc: faststring_alloc as *mut _,
+        },
+        ffi::PyType_Slot {
+            slot: ffi::Py_tp_dealloc as i32,
+            pfunc: faststring_dealloc as *mut _,
+        },
+        ffi::PyType_Slot {
+            slot: ffi::Py_tp_free as i32,
+            pfunc: faststring_free as *mut _,
+        },
+        ffi::PyType_Slot {
+            slot: 0,
+            pfunc: std::ptr::null_mut(),
+        },
+    ];
+
+    let base_size = unsafe { ffi::PyUnicode_Type.tp_basicsize };
+
+    let mut spec = ffi::PyType_Spec {
+        name: b"yurki.FastString\0".as_ptr() as *const _,
+        basicsize: base_size as i32,
+        itemsize: 0,
+        flags: (ffi::Py_TPFLAGS_DEFAULT
+            | ffi::Py_TPFLAGS_UNICODE_SUBCLASS
+            | ffi::Py_TPFLAGS_BASETYPE) as u32,
+        slots: slots.as_mut_ptr(),
+    };
+
+    let typ = ffi::PyType_FromSpec(&mut spec as *mut _) as *mut ffi::PyTypeObject;
+    if typ.is_null() {
+        return Err(PyErr::fetch(Python::assume_gil_acquired()));
+    }
+
+    FASTSTRING_TYPE = typ;
+    ffi::PyModule_AddObject(m, b"FastString\0".as_ptr() as *const _ as *mut _, typ as _);
+    Ok(())
+}
+
+// FastString creation
+
+/// Create a yurki.FastString from UTF-8 text.
+/// Safety: caller must hold the GIL and `text` must be valid UTF-8.
+pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
+    debug_println!("create_fast_string: input {:?}", text);
+
+    // Single-pass scan: get max codepoint and length
+    let (character_count, max_codepoint) = text.chars().fold((0, 0u32), |(len, max_cp), ch| {
+        (len + 1, max_cp | (ch as u32))
+    });
+
+    // Choose internal kind / element size
+    let (unicode_kind, element_size) = match max_codepoint {
+        0x0000..=0x00FF => (ffi::PyUnicode_1BYTE_KIND as u32, 1),
+        0x0100..=0xFFFF => (ffi::PyUnicode_2BYTE_KIND as u32, 2),
+        _ => (ffi::PyUnicode_4BYTE_KIND as u32, 4),
+    };
+
+    // Calculate sizes
+    let header_actual = if max_codepoint < 0x80 {
+        std::mem::size_of::<ffi::PyASCIIObject>()
+    } else {
+        std::mem::size_of::<ffi::PyCompactUnicodeObject>()
+    };
+    let header_padded = (*FASTSTRING_TYPE).tp_basicsize as usize;
+    let total_bytes = header_padded + (character_count + 1) * element_size;
+
+    // Allocate memory
+    let raw = internal_alloc_bytes(total_bytes) as *mut u8;
+    if raw.is_null() {
+        ffi::PyErr_NoMemory();
+        return std::ptr::null_mut();
+    }
+    std::ptr::write_bytes(raw, 0, total_bytes);
+    debug_println!("  alloc {:p}, total_bytes={total_bytes}", raw);
+
+    // PyObject header
+    let py_object = raw as *mut ffi::PyVarObject;
+    std::ptr::write(
+        &mut (*py_object).ob_base.ob_refcnt as *mut _ as *mut ffi::Py_ssize_t,
+        1,
+    );
+    (*py_object).ob_base.ob_type = FASTSTRING_TYPE;
+
+    // PyASCII fields
+    let ascii_header = &mut *(raw as *mut ffi::PyASCIIObject);
+    ascii_header.length = character_count as ffi::Py_ssize_t;
+    ascii_header.hash = -1;
+
+    // Bit layout: interned(2) | kind(3) | compact(1) | ascii(1) | ready(1)
+    let is_ascii = if max_codepoint < 0x80 { 1 } else { 0 };
+    let flags: u32 = (unicode_kind << 2)        // bits 2-4  (1/2/4-BYTE)
+                    | (1 << 5)                  // compact = 1 (always)
+                    | ((is_ascii as u32) << 6)  // ascii = 0 or 1
+                    | (1 << 7);                 // ready  = 1
+
+    std::ptr::write(&mut ascii_header.state as *mut _ as *mut u32, flags);
+    debug_println!("  flags = 0x{flags:x} (is_ascii={is_ascii})");
+
+    // Compact-unicode extras
+    if is_ascii == 0 {
+        let compact_unicode = &mut *(raw as *mut ffi::PyCompactUnicodeObject);
+        compact_unicode.utf8_length = 0;
+        compact_unicode.utf8 = std::ptr::null_mut();
+    }
+
+    // Copy canonical data just after real header
+    let payload = raw.add(header_actual);
+    match element_size {
+        1 => std::ptr::copy_nonoverlapping(text.as_ptr(), payload, character_count),
         2 => {
             let dst = payload as *mut u16;
-            for (i, u) in text.encode_utf16().enumerate() { *dst.add(i) = u; }
-            *dst.add(char_len) = 0;
+            for (i, cp) in text.encode_utf16().enumerate() {
+                *dst.add(i) = cp;
+            }
         }
         4 => {
             let dst = payload as *mut u32;
-            for (i, ch) in text.chars().enumerate() { *dst.add(i) = ch as u32; }
-            *dst.add(char_len) = 0;
+            for (i, ch) in text.chars().enumerate() {
+                *dst.add(i) = ch as u32;
+            }
         }
         _ => unreachable!(),
     }
+    debug_println!("  payload copied @ {:p}", payload);
 
-    raw.cast()
-}
-
-// optional: very small smoke-test
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pyo3::{prelude::*, Py};
-
-    #[test]
-    fn round_trip() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| unsafe {
-            let raw = make_compact_unicode("Γειά σου Κόσμε");
-            let s: Py<PyAny> = Py::from_owned_ptr(py, raw);
-            assert_eq!(s.extract::<String>(py).unwrap(), "Γειά σου Κόσμε");
-        });
-    }
+    raw as *mut ffi::PyObject
 }

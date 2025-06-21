@@ -1,7 +1,7 @@
-use regex::Regex;
 use pyo3::ffi;
-use pyo3::{prelude::*, Bound};
-use crate::pystring::make_compact_unicode;
+use pyo3::{Bound, prelude::*};
+use regex::Regex;
+use crate::pystring::create_fast_string;
 
 // Wrapper types for performance optimization
 #[derive(Clone, Debug)]
@@ -42,7 +42,7 @@ impl<'py> pyo3::conversion::IntoPyObject<'py> for FastString {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         unsafe {
-            let ptr = make_compact_unicode(&self.0);
+            let ptr = create_fast_string(&self.0);
             Ok(Bound::from_owned_ptr(py, ptr))
         }
     }
@@ -75,11 +75,13 @@ impl<'py> pyo3::conversion::IntoPyObject<'py> for FastStringVec {
         unsafe {
             let list_ptr = ffi::PyList_New(self.0.len() as isize);
             if list_ptr.is_null() {
-                return Err(pyo3::exceptions::PyMemoryError::new_err("Failed to create list"));
+                return Err(pyo3::exceptions::PyMemoryError::new_err(
+                    "Failed to create list",
+                ));
             }
-            
+
             for (i, s) in self.0.iter().enumerate() {
-                let str_ptr = make_compact_unicode(s);
+                let str_ptr = create_fast_string(s);
                 ffi::PyList_SetItem(list_ptr, i as isize, str_ptr);
             }
             Ok(Bound::from_owned_ptr(py, list_ptr))

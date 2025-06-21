@@ -17,9 +17,14 @@ itertools = "0.14"
 bumpalo = { version = "3.14", features = ["collections"] }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
 pyo3-ffi = "0.25.1"
+mimalloc = "0.1.47"
 
 [build-dependencies]
 pyo3-build-config = "0.25.1"
+
+[features]
+default = []
+debug-yurki-internal = []
 
 [profile.release]
 opt-level = 3
