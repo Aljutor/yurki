@@ -134,7 +134,7 @@ fn map_pylist_parallel<'py, 'a, T, F1, F2>(
 ) -> PyResult<Py<PyList>>
 where
     T: ToPyObject + Send + 'static,
-    F1: Fn() -> F2,
+    F1: Fn() -> F2 + Send + Sync,
     F2: Fn(&str) -> T + Send + 'static,
 {
     let list_len = list.len();
@@ -169,13 +169,12 @@ where
 
     // Create channel for streaming results from workers to main thread
     let (sender, receiver) = crossbeam_channel::unbounded::<WorkerResult<T>>();
-
-    // Spawn workers using pool.spawn()
+    
     for job_idx in 0..real_jobs {
         let (range_start, range_stop) = make_range(list_len, real_jobs, job_idx);
         let input_list_ptr = input_list_ptr.clone();
         let sender = sender.clone();
-
+    
         let func = make_func();
         pool.spawn(move || {
             debug_println!(
@@ -225,7 +224,8 @@ where
                     // Needs main thread conversion (Vec<T>)
                     sender.send(WorkerResult::RustType((i, result))).unwrap();
                 }
-            }
+            };
+        
 
             debug_println!(
                 "Thread {} finished, final arena size: {}MB",
@@ -233,7 +233,7 @@ where
                 bump.allocated_bytes() / 1024 / 1024
             );
         });
-    }
+    };
 
     // Close sender side to signal when all workers are done
     drop(sender);
@@ -256,6 +256,8 @@ where
             }
         }
     }
+
+
     debug_println!("Passed the barrier");
 
     if inplace {
@@ -365,7 +367,7 @@ pub fn map_pylist<'py, 'a, T, F1, F2>(
 ) -> PyResult<Py<PyList>>
 where
     T: ToPyObject + Send + 'static,
-    F1: Fn() -> F2,
+    F1: Fn() -> F2 + Send + Sync,
     F2: Fn(&str) -> T + Send + 'static,
 {
     if jobs == 1 {

@@ -23,8 +23,8 @@ macro_rules! debug_println {
 // Export the macro so it can be used in other modules
 pub(crate) use debug_println;
 
-pub mod core;
 pub mod converter;
+pub mod core;
 pub mod pystring;
 pub mod text;
 

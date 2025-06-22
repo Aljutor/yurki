@@ -1,7 +1,7 @@
 use mimalloc::MiMalloc;
 use pyo3::{ffi, prelude::*};
 use std::alloc::{GlobalAlloc, Layout};
-use std::{ptr,mem};
+use std::{mem, ptr};
 
 // Import the unified debug system
 use crate::debug_println;
@@ -32,8 +32,8 @@ unsafe extern "C" fn faststring_alloc(
     type_object: *mut ffi::PyTypeObject,
     item_count: ffi::Py_ssize_t,
 ) -> *mut ffi::PyObject {
-    let size =
-        ((*type_object).tp_basicsize as isize + item_count * (*type_object).tp_itemsize as isize) as usize;
+    let size = ((*type_object).tp_basicsize as isize
+        + item_count * (*type_object).tp_itemsize as isize) as usize;
     let p = internal_alloc_bytes(size) as *mut ffi::PyObject;
     if p.is_null() {
         ffi::PyErr_NoMemory();
@@ -210,7 +210,7 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
     let flags: u32 = (unicode_kind << 2)        // bits 2-4  (1/2/4-BYTE)
                    | (1 << 5)                   // compact = 1 (always)
                    | ((is_ascii as u32) << 6)   // ascii = 0 or 1
-                   | (1 << 7);                  // ready  = 1
+                   | (1 << 7); // ready  = 1
 
     std::ptr::write(&mut ascii_header.state as *mut _ as *mut u32, flags);
     debug_println!("  flags = 0x{flags:x} (is_ascii={is_ascii})");
