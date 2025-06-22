@@ -1,21 +1,37 @@
-use pyo3::BoundObject;
 use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::{PyObject, Python};
+use pyo3::Python;
 
 // Import the unified debug system
 use crate::debug_println;
+use crate::converter::{ToPyObject};
+
+// hack object to pass raw pointer for PyObject
+#[derive(Clone, Debug)]
+pub struct PyObjectPtr(pub *mut pyo3_ffi::PyObject);
+unsafe impl Send for PyObjectPtr {}
+unsafe impl Sync for PyObjectPtr {}
+
+// Enum for worker results - either pre-converted PyObject or raw Rust type
+#[derive(Debug)]
+pub enum WorkerResult<T> {
+    PyObject((usize, PyObjectPtr)),  // Pre-converted in worker thread
+    RustType((usize, T)),           // Raw type for main thread conversion
+}
+
+unsafe impl<T: Send> Send for WorkerResult<T> {}
+
+// Helper function to safely set list items with PyObjectPtr
+#[inline(always)]
+unsafe fn set_list_item(list_ptr: &PyObjectPtr, index: usize, item_ptr: PyObjectPtr) {
+    pyo3_ffi::PyList_SetItem(list_ptr.0, index as isize, item_ptr.0);
+}
 
 // Memory management constants for bump allocator
 const INITIAL_BUMP_CAPACITY: usize = 256 * 1024; // 256KB
 const RESET_THRESHOLD: usize = 16 * 1024 * 1024; // 16MB 
 const FREE_THRESHOLD: usize = RESET_THRESHOLD * 2; // 32MB
-// hack object to pass raw pointer for PyObject
-#[derive(Clone)]
-struct PyObjectPtr(*mut pyo3_ffi::PyObject);
-unsafe impl Send for PyObjectPtr {}
-unsafe impl Sync for PyObjectPtr {}
 
 // Custom read function, to replace python's PyUnicode_AsUTF8AndSize
 // PyUnicode_AsUTF8AndSize unfortunatly is not thread safe before python 3.13t
@@ -90,6 +106,168 @@ fn get_string_at_idx<'a>(
     }
 }
 
+fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
+    assert!(jobs > 0, "jobs must be > 0");
+    assert!(
+        i < jobs,
+        "thread index {} is out of range (jobs = {})",
+        i,
+        jobs
+    );
+
+    let base = len / jobs;
+    let rem = len % jobs;
+
+    // Distribute the remainder to the first `rem` jobs
+    let start = i * base + i.min(rem);
+    let end = start + base + if i < rem { 1 } else { 0 };
+
+    (start, end)
+}
+
+fn map_pylist_parallel<'py, 'a, T, F1, F2>(
+    py: Python<'py>,
+    list: &'a Bound<'py, PyList>,
+    jobs: usize,
+    inplace: bool,
+    make_func: F1,
+) -> PyResult<Py<PyList>>
+where
+    T: ToPyObject + Send + 'static,
+    F1: Fn() -> F2,
+    F2: Fn(&str) -> T + Send + 'static,
+{
+    let list_len = list.len();
+    let input_list_ptr = PyObjectPtr(list.as_ptr());
+
+    let real_jobs = jobs.min(list_len);
+    debug_println!("parallel processing: jobs {}", real_jobs);
+
+    // Create result list or use input list
+    let target_list_ptr = if inplace {
+        input_list_ptr.clone()
+    } else {
+        unsafe {
+            let result_list = pyo3_ffi::PyList_New(list_len as isize);
+            assert!(!result_list.is_null());
+            PyObjectPtr(result_list)
+        }
+    };
+
+    // Setup threading pool
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(real_jobs)
+        .thread_name(|t| format!("worker_{}", t))
+        .start_handler(|_t| {
+            debug_println!("worker_{} init", _t);
+        })
+        .exit_handler(|_t| {
+            debug_println!("worker_{} exit", _t);
+        })
+        .build()
+        .unwrap();
+
+    // Create channel for streaming results from workers to main thread
+    let (sender, receiver) = crossbeam_channel::unbounded::<WorkerResult<T>>();
+
+    // Spawn workers using pool.spawn()
+    for job_idx in 0..real_jobs {
+        let (range_start, range_stop) = make_range(list_len, real_jobs, job_idx);
+        let input_list_ptr = input_list_ptr.clone();
+        let sender = sender.clone();
+
+        let func = make_func();
+        pool.spawn(move || {
+            debug_println!(
+                "thread {} started, range {}, {}",
+                job_idx,
+                range_start,
+                range_stop
+            );
+
+            // Pre-allocate bump arena for this thread
+            let mut bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+
+            for i in range_start..range_stop {
+                let current_size = bump.allocated_bytes();
+
+                if current_size > FREE_THRESHOLD {
+                    drop(bump);
+                    bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
+                    debug_println!(
+                        "Thread {}: freed arena at {}MB",
+                        job_idx,
+                        current_size / 1024 / 1024
+                    );
+                } else if current_size > RESET_THRESHOLD {
+                    bump.reset();
+                    debug_println!(
+                        "Thread {}: reset arena at {}MB",
+                        job_idx,
+                        current_size / 1024 / 1024
+                    );
+                }
+
+                // Extract string from input list
+                let bump_string = get_string_at_idx(&input_list_ptr, i, &bump);
+                
+                // Process the string
+                let result = func(bump_string.as_str());
+                
+                // Compile-time dispatch based on conversion strategy
+                if T::THREAD_SAFE {
+                    // Safe to convert in worker thread (String, bool)
+                    unsafe {
+                        let py_obj = result.to_py_object();
+                        sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
+                    }
+                } else {
+                    // Needs main thread conversion (Vec<T>)
+                    sender.send(WorkerResult::RustType((i, result))).unwrap();
+                }
+            }
+
+            debug_println!(
+                "Thread {} finished, final arena size: {}MB",
+                job_idx,
+                bump.allocated_bytes() / 1024 / 1024
+            );
+        });
+    }
+
+    // Close sender side to signal when all workers are done
+    drop(sender);
+
+    // Main thread: apply results as they arrive (streaming updates)
+    for worker_result in receiver {
+        match worker_result {
+            WorkerResult::PyObject((index, py_obj)) => {
+                // Pre-converted in worker thread - just set
+                unsafe {
+                    set_list_item(&target_list_ptr, index, py_obj);
+                }
+            }
+            WorkerResult::RustType((index, rust_obj)) => {
+                // Convert in main thread with GIL
+                unsafe {
+                    let py_obj = rust_obj.to_py_object();
+                    set_list_item(&target_list_ptr, index, py_obj);
+                }
+            }
+        }
+    }
+    debug_println!("Passed the barrier");
+
+    if inplace {
+        Ok(list.clone().into())
+    } else {
+        unsafe {
+            Ok(Py::from_owned_ptr(py, target_list_ptr.0))
+        }
+    }
+}
+
+// Sequential processing for jobs=1 or fallback
 fn map_pylist_sequential<'py, 'a, T, F1, F2>(
     py: Python<'py>,
     list: &'a Bound<'py, PyList>,
@@ -97,18 +275,12 @@ fn map_pylist_sequential<'py, 'a, T, F1, F2>(
     make_func: F1,
 ) -> PyResult<Py<PyList>>
 where
-    T: pyo3::conversion::IntoPyObject<'py>
-        + std::marker::Send
-        + std::marker::Sync
-        + std::clone::Clone
-        + std::default::Default
-        + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
+    T: ToPyObject + Send + 'static,
     F1: Fn() -> F2,
-    F2: Fn(&str) -> T + std::marker::Send + 'static,
+    F2: Fn(&str) -> T + Send + 'static,
 {
     let list_len = list.len();
-    let list_ptr = PyObjectPtr(list.as_ptr());
+    let input_list_ptr = PyObjectPtr(list.as_ptr());
     let func = make_func();
 
     debug_println!("sequential processing, list length {}", list_len);
@@ -117,7 +289,7 @@ where
     let mut bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
 
     if inplace {
-        // Modify existing list in place using direct FFI
+        // Modify existing list in place
         for i in 0..list_len {
             let current_size = bump.allocated_bytes();
 
@@ -136,19 +308,18 @@ where
                 );
             }
 
-            let bump_string = get_string_at_idx(&list_ptr, i, &bump);
+            let bump_string = get_string_at_idx(&input_list_ptr, i, &bump);
             let result = func(bump_string.as_str());
-            let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
             unsafe {
-                // Direct FFI call - no bounds checking, maximum performance
-                pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
+                let py_obj = result.to_py_object();
+                set_list_item(&input_list_ptr, i, py_obj);
             }
         }
         Ok(list.clone().into())
     } else {
         unsafe {
-            // create list with exact size
+            // Create new list with exact size
             let result_list = pyo3_ffi::PyList_New(list_len as isize);
             assert!(!result_list.is_null());
 
@@ -170,162 +341,21 @@ where
                     );
                 }
 
-                let bump_string = get_string_at_idx(&list_ptr, i, &bump);
+                let bump_string = get_string_at_idx(&input_list_ptr, i, &bump);
                 let result = func(bump_string.as_str());
-                let item: PyObject = result.into_pyobject(py).unwrap().into_any().unbind();
 
-                // direct set, PyList_SetItem steals the reference
-                pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
+                let py_obj = result.to_py_object();
+                let result_list_ptr = PyObjectPtr(result_list);
+                set_list_item(&result_list_ptr, i, py_obj);
             }
 
-            Ok(Py::from_owned_ptr(py, result_list))
+            let result_ptr = PyObjectPtr(result_list);
+            Ok(Py::from_owned_ptr(py, result_ptr.0))
         }
     }
 }
 
-fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
-    assert!(jobs > 0, "jobs must be > 0");
-    assert!(
-        i < jobs,
-        "thread index {} is out of range (jobs = {})",
-        i,
-        jobs
-    );
-
-    let base = len / jobs;
-    let rem = len % jobs;
-
-    // Distribute the remainder to the first `rem` jobs
-    let start = i * base + i.min(rem);
-    let end = start + base + if i < rem { 1 } else { 0 };
-
-    (start, end)
-}
-
-#[cfg(not(all(Py_3_13, py_sys_config = "Py_GIL_DISABLED")))]
-fn map_pylist_parallel<'py, 'a, T, F1, F2>(
-    py: Python<'py>,
-    list: &'a Bound<'py, PyList>,
-    jobs: usize,
-    inplace: bool,
-    make_func: F1,
-) -> PyResult<Py<PyList>>
-where
-    T: pyo3::conversion::IntoPyObject<'py>
-        + std::marker::Send
-        + std::marker::Sync
-        + std::clone::Clone
-        + std::default::Default
-        + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
-    F1: Fn() -> F2,
-    F2: Fn(&str) -> T + std::marker::Send + 'static,
-{
-    let list_len = list.len();
-    let list_ptr = PyObjectPtr(list.as_ptr());
-
-    let real_jobs = jobs.min(list_len);
-    debug_println!("parallel processing: jobs {}", real_jobs);
-
-    // setup threading pool
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(real_jobs)
-        .thread_name(|t| format!("worker_{}", t))
-        .start_handler(|t| {
-            debug_println!("worker_{} init", t);
-        })
-        .exit_handler(|t| {
-            debug_println!("worker_{} exit", t);
-        })
-        .build()
-        .unwrap();
-
-    // channels to send task and receive results
-    let (send_result, get_result) = crossbeam_channel::unbounded();
-
-    // init all workers
-    for job_idx in 0..real_jobs {
-        let (range_start, range_stop) = make_range(list_len, real_jobs, job_idx);
-        let send_result = send_result.clone();
-        let list_ptr = list_ptr.clone();
-
-        let func = make_func();
-        pool.spawn(move || {
-            debug_println!(
-                "thread {} started, range {}, {}",
-                job_idx,
-                range_start,
-                range_stop
-            );
-
-            // Pre-allocate bump arena for this thread
-            let mut bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
-
-            for i in range_start..range_stop {
-                let current_size = bump.allocated_bytes();
-
-                if current_size > FREE_THRESHOLD {
-                    // Drastic action: drop and recreate to free system memory
-                    drop(bump);
-                    bump = bumpalo::Bump::with_capacity(INITIAL_BUMP_CAPACITY);
-                    debug_println!(
-                        "Thread {}: freed arena at {}MB",
-                        job_idx,
-                        current_size / 1024 / 1024
-                    );
-                } else if current_size > RESET_THRESHOLD {
-                    // Gentle reset: keeps allocated memory but resets pointer
-                    bump.reset();
-                    debug_println!(
-                        "Thread {}: reset arena at {}MB",
-                        job_idx,
-                        current_size / 1024 / 1024
-                    );
-                }
-
-                let bump_string = get_string_at_idx(&list_ptr, i, &bump);
-                let result = func(bump_string.as_str());
-
-                send_result.send((i, result)).unwrap();
-            }
-
-            debug_println!(
-                "Thread {} finished, final arena size: {}MB",
-                job_idx,
-                bump.allocated_bytes() / 1024 / 1024
-            );
-        });
-    }
-    // we don't need this channel side after init of all workers
-    drop(send_result);
-
-    // collecting all remain results
-    if inplace {
-        get_result.iter().for_each(|(i, o)| {
-            let item: PyObject = o.into_pyobject(py).unwrap().into_any().unbind();
-            unsafe {
-                pyo3_ffi::PyList_SetItem(list_ptr.0, i as isize, item.into_ptr());
-            }
-        });
-        Ok(list.clone().into())
-    } else {
-        unsafe {
-            // create list with exact size
-            // it's imporant to fully init it
-            let result_list = pyo3_ffi::PyList_New(list_len as isize);
-            assert!(!result_list.is_null());
-
-            get_result.iter().for_each(|(i, o)| {
-                let item: PyObject = o.into_pyobject(py).unwrap().into_any().unbind();
-                // Direct set, PyList_SetItem steals the reference
-                pyo3_ffi::PyList_SetItem(result_list, i as isize, item.into_ptr());
-            });
-
-            Ok(Py::from_owned_ptr(py, result_list))
-        }
-    }
-}
-
+// Main entry point - simplified to just sequential vs parallel
 pub fn map_pylist<'py, 'a, T, F1, F2>(
     py: Python<'py>,
     list: &'a Bound<'py, PyList>,
@@ -334,15 +364,9 @@ pub fn map_pylist<'py, 'a, T, F1, F2>(
     make_func: F1,
 ) -> PyResult<Py<PyList>>
 where
-    T: pyo3::conversion::IntoPyObject<'py>
-        + std::marker::Send
-        + std::marker::Sync
-        + std::clone::Clone
-        + std::default::Default
-        + 'static,
-    T::Error: std::convert::Into<pyo3::PyErr> + std::fmt::Debug,
+    T: ToPyObject + Send + 'static,
     F1: Fn() -> F2,
-    F2: Fn(&str) -> T + std::marker::Send + 'static,
+    F2: Fn(&str) -> T + Send + 'static,
 {
     if jobs == 1 {
         map_pylist_sequential(py, list, inplace, make_func)

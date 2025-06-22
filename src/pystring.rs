@@ -208,9 +208,9 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
     // Bit layout: interned(2) | kind(3) | compact(1) | ascii(1) | ready(1)
     let is_ascii = if max_codepoint < 0x80 { 1 } else { 0 };
     let flags: u32 = (unicode_kind << 2)        // bits 2-4  (1/2/4-BYTE)
-                    | (1 << 5)                  // compact = 1 (always)
-                    | ((is_ascii as u32) << 6)  // ascii = 0 or 1
-                    | (1 << 7);                 // ready  = 1
+                   | (1 << 5)                   // compact = 1 (always)
+                   | ((is_ascii as u32) << 6)   // ascii = 0 or 1
+                   | (1 << 7);                  // ready  = 1
 
     std::ptr::write(&mut ascii_header.state as *mut _ as *mut u32, flags);
     debug_println!("  flags = 0x{flags:x} (is_ascii={is_ascii})");

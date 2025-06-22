@@ -24,6 +24,7 @@ macro_rules! debug_println {
 pub(crate) use debug_println;
 
 pub mod core;
+pub mod converter;
 pub mod pystring;
 pub mod text;
 

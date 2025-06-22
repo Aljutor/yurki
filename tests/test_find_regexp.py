@@ -23,7 +23,7 @@ def generate_test_data(size):
 
 class TestFind:
     @pytest.mark.parametrize("jobs", JOBS)
-    @pytest.mark.parametrize("inplace", [True, False])
+    @pytest.mark.parametrize("inplace", [False, True])
     def test_find(self, jobs, inplace):
         data, expected = generate_test_data(10)
         result = yurki.regexp.find(data=data, pattern=PATTERN, jobs=jobs, inplace=inplace)
