@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::core::PyObjectPtr;
 use crate::pystring::create_fast_string;
 use parking_lot::Mutex;

@@ -1,4 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+#![feature(portable_simd)]
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
@@ -23,10 +24,11 @@ macro_rules! debug_println {
 // Export the macro so it can be used in other modules
 pub(crate) use debug_println;
 
-pub mod converter;
 pub mod core;
+pub mod converter;
 pub mod pystring;
 pub mod text;
+pub mod smid;
 
 #[pymodule(gil_used = false)]
 mod yurki {
