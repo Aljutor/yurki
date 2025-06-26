@@ -4,7 +4,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 use regex::RegexBuilder;
-
 //
 // ---------------------------------------------------------------------------
 // Unified Debug System
@@ -29,6 +28,7 @@ pub mod converter;
 pub mod pystring;
 pub mod text;
 pub mod smid;
+pub mod pylist;
 
 #[pymodule(gil_used = false)]
 mod yurki {
@@ -167,7 +167,11 @@ mod yurki {
                     .set_item("yurki.internal", m)
             });
 
-            unsafe { pystring::init_faststring_type(m.as_ptr()) }
+            unsafe { 
+                pystring::init_faststring_type(m.as_ptr())?;
+                pylist::init_fastlist_type(m.as_ptr())?;
+                Ok(())
+            }
         }
     }
 }

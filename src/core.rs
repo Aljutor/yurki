@@ -6,6 +6,7 @@ use pyo3::Python;
 // Import the unified debug system
 use crate::debug_println;
 use crate::converter::{ToPyObject};
+use crate::pylist::{create_fast_list_empty, fast_list_set_item_transfer};
 use crate::smid::make_string_fast;
 
 // hack object to pass raw pointer for PyObject
@@ -26,7 +27,7 @@ unsafe impl<T: Send> Send for WorkerResult<T> {}
 // Helper function to safely set list items with PyObjectPtr
 #[inline(always)]
 unsafe fn set_list_item(list_ptr: &PyObjectPtr, index: usize, item_ptr: PyObjectPtr) {
-    pyo3_ffi::PyList_SetItem(list_ptr.0, index as isize, item_ptr.0);
+    fast_list_set_item_transfer(list_ptr.0, index as isize, item_ptr.0);
 }
 
 // Bump allocator manager to prevent code duplication
@@ -127,7 +128,7 @@ where
         input_list_ptr.clone()
     } else {
         unsafe {
-            let result_list = pyo3_ffi::PyList_New(list_len as isize);
+            let result_list = create_fast_list_empty(list_len as isize);
             assert!(!result_list.is_null());
             PyObjectPtr(result_list)
         }
@@ -269,7 +270,7 @@ where
     } else {
         unsafe {
             // Create new list with exact size
-            let result_list = pyo3_ffi::PyList_New(list_len as isize);
+            let result_list = create_fast_list_empty(list_len as isize);
             assert!(!result_list.is_null());
 
             for i in 0..list_len {
