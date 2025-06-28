@@ -1,9 +1,13 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![feature(portable_simd)]
+#![feature(min_specialization)]
 
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 use regex::RegexBuilder;
+
+use crate::converter::ToPyObject;
+
 //
 // ---------------------------------------------------------------------------
 // Unified Debug System
@@ -23,12 +27,12 @@ macro_rules! debug_println {
 // Export the macro so it can be used in other modules
 pub(crate) use debug_println;
 
-pub mod core;
 pub mod converter;
-pub mod pystring;
-pub mod text;
-pub mod smid;
+pub mod core;
 pub mod pylist;
+pub mod pystring;
+pub mod smid;
+pub mod text;
 
 #[pymodule(gil_used = false)]
 mod yurki {
@@ -46,15 +50,18 @@ mod yurki {
             case: bool,
             jobs: usize,
             inplace: bool,
-        ) -> PyResult<Py<PyList>> {
+        ) -> PyResult<PyObject> {
             let pattern = RegexBuilder::new(&pattern.to_string())
                 .case_insensitive(case)
                 .build()
                 .unwrap();
 
-            let make_func = move || {
+            let make_func = {
                 let pattern = pattern.clone();
-                move |s: &str| text::find_in_string(s, &pattern)
+                move || unsafe {
+                    let pattern = pattern.clone();
+                    move |s: &str| text::find_in_string(s, &pattern).to_py_object()
+                }
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
@@ -69,15 +76,15 @@ mod yurki {
             case: bool,
             jobs: usize,
             inplace: bool,
-        ) -> PyResult<Py<PyList>> {
+        ) -> PyResult<PyObject> {
             let pattern = RegexBuilder::new(&pattern.to_string())
                 .case_insensitive(case)
                 .build()
                 .unwrap();
 
-            let make_func = move || {
+            let make_func = move || unsafe {
                 let pattern = pattern.clone();
-                move |s: &str| text::is_match_in_string(s, &pattern)
+                move |s: &str| text::is_match_in_string(s, &pattern).to_py_object()
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
@@ -92,15 +99,15 @@ mod yurki {
             case: bool,
             jobs: usize,
             inplace: bool,
-        ) -> PyResult<Py<PyList>> {
+        ) -> PyResult<PyObject> {
             let pattern = RegexBuilder::new(&pattern.to_string())
                 .case_insensitive(case)
                 .build()
                 .unwrap();
 
-            let make_func = move || {
+            let make_func = move || unsafe {
                 let pattern = pattern.clone();
-                move |s: &str| text::capture_regex_in_string(s, &pattern)
+                move |s: &str| text::capture_regex_in_string(s, &pattern).to_py_object()
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
@@ -115,15 +122,15 @@ mod yurki {
             case: bool,
             jobs: usize,
             inplace: bool,
-        ) -> PyResult<Py<PyList>> {
+        ) -> PyResult<PyObject> {
             let pattern = RegexBuilder::new(&pattern.to_string())
                 .case_insensitive(case)
                 .build()
                 .unwrap();
 
-            let make_func = move || {
+            let make_func = move || unsafe {
                 let pattern = pattern.clone();
-                move |s: &str| text::split_by_regexp_string(s, &pattern)
+                move |s: &str| text::split_by_regexp_string(s, &pattern).to_py_object()
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
@@ -140,7 +147,7 @@ mod yurki {
             case: bool,
             jobs: usize,
             inplace: bool,
-        ) -> PyResult<Py<PyList>> {
+        ) -> PyResult<PyObject> {
             let pattern = RegexBuilder::new(&pattern.to_string())
                 .case_insensitive(case)
                 .build()
@@ -148,10 +155,12 @@ mod yurki {
 
             let replacement_str = replacement.to_string();
 
-            let make_func = move || {
+            let make_func = move || unsafe {
                 let pattern = pattern.clone();
                 let replacement = replacement_str.clone();
-                move |s: &str| text::replace_regexp_in_string(s, &pattern, &replacement, count)
+                move |s: &str| {
+                    text::replace_regexp_in_string(s, &pattern, &replacement, count).to_py_object()
+                }
             };
 
             let list = core::map_pylist(py, list, jobs, inplace, make_func)?;
@@ -167,7 +176,7 @@ mod yurki {
                     .set_item("yurki.internal", m)
             });
 
-            unsafe { 
+            unsafe {
                 pystring::init_faststring_type(m.as_ptr())?;
                 pylist::init_fastlist_type(m.as_ptr())?;
                 Ok(())

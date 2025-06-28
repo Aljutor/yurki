@@ -3,8 +3,9 @@ use mimalloc::MiMalloc;
 use pyo3::{ffi, prelude::*};
 use std::{
     alloc::{GlobalAlloc, Layout},
-    mem, ptr,
-    os::raw::c_int
+    mem,
+    os::raw::c_int,
+    ptr,
 };
 
 //-------------------------------------------
@@ -20,16 +21,16 @@ static FAST_LIST_ALLOCATOR: MiMalloc = MiMalloc;
 /// Allocate `size` bytes aligned to `usize`.
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
-    let layout = Layout::from_size_align(size, mem::align_of::<usize>())
-        .expect("FastList: invalid layout");
+    let layout =
+        Layout::from_size_align(size, mem::align_of::<usize>()).expect("FastList: invalid layout");
     GlobalAlloc::alloc(&FAST_LIST_ALLOCATOR, layout)
 }
 
 /// Free a previously-allocated block.
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
-    let layout = Layout::from_size_align(size, mem::align_of::<usize>())
-        .expect("FastList: invalid layout");
+    let layout =
+        Layout::from_size_align(size, mem::align_of::<usize>()).expect("FastList: invalid layout");
     GlobalAlloc::dealloc(&FAST_LIST_ALLOCATOR, ptr as *mut u8, layout)
 }
 
@@ -40,7 +41,7 @@ unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
 /// it as a true list subclass.
 #[repr(C)]
 struct PyFastList {
-    ob_base: ffi::PyVarObject,      // ob_refcnt / ob_type / ob_size
+    ob_base: ffi::PyVarObject, // ob_refcnt / ob_type / ob_size
     ob_item: *mut *mut ffi::PyObject,
     allocated: ffi::Py_ssize_t,
 }
@@ -58,7 +59,11 @@ unsafe extern "C" fn fastlist_alloc(
     debug_println!("fastlist_alloc ▶ subtype={:p} items={item_count}", subtype);
 
     let header = (*subtype).tp_basicsize as usize;
-    let elements = if item_count < 0 { 0 } else { item_count as usize };
+    let elements = if item_count < 0 {
+        0
+    } else {
+        item_count as usize
+    };
     let total_size = header + elements * mem::size_of::<*mut ffi::PyObject>();
 
     let raw = internal_alloc_bytes(total_size) as *mut PyFastList;
@@ -71,8 +76,8 @@ unsafe extern "C" fn fastlist_alloc(
     // Initialise ob_refcnt / ob_type / ob_size
     let var = &mut (*raw).ob_base;
     std::ptr::write(
-    &mut (*var).ob_base.ob_refcnt as *mut _ as *mut ffi::Py_ssize_t,
-    1,
+        &mut (*var).ob_base.ob_refcnt as *mut _ as *mut ffi::Py_ssize_t,
+        1,
     );
     var.ob_base.ob_type = subtype;
     var.ob_size = item_count;
@@ -162,9 +167,8 @@ pub unsafe fn init_fastlist_type(m: *mut ffi::PyObject) -> PyResult<()> {
         name: b"yurki.FastList\0".as_ptr() as *const _,
         basicsize: mem::size_of::<PyFastList>() as c_int,
         itemsize: mem::size_of::<*mut ffi::PyObject>() as c_int,
-        flags: (ffi::Py_TPFLAGS_DEFAULT
-            | ffi::Py_TPFLAGS_LIST_SUBCLASS
-            | ffi::Py_TPFLAGS_BASETYPE) as u32,
+        flags: (ffi::Py_TPFLAGS_DEFAULT | ffi::Py_TPFLAGS_LIST_SUBCLASS | ffi::Py_TPFLAGS_BASETYPE)
+            as u32,
         slots: slots.as_mut_ptr(),
     };
 
@@ -204,11 +208,7 @@ pub unsafe fn create_fast_list(items: &[*mut ffi::PyObject]) -> *mut ffi::PyObje
         }
     } else {
         // GIL not held; just copy raw pointers – caller must keep them alive.
-        ptr::copy_nonoverlapping(
-            items.as_ptr(),
-            (*fl).ob_item,
-            items.len(),
-        );
+        ptr::copy_nonoverlapping(items.as_ptr(), (*fl).ob_item, items.len());
     }
 
     debug_println!("create_fast_list ◀ obj={:p}", obj);
@@ -218,27 +218,32 @@ pub unsafe fn create_fast_list(items: &[*mut ffi::PyObject]) -> *mut ffi::PyObje
 /// Create empty FastList with pre-allocated space (like PyList_New)
 pub unsafe fn create_fast_list_empty(size: isize) -> *mut ffi::PyObject {
     debug_println!("create_fast_list_empty ▶ size={}", size);
-    
+
     if size <= 0 {
         return create_fast_list(&[]); // Empty list
     }
-    
+
     let obj = fastlist_alloc(FASTLIST_TYPE, size);
     if obj.is_null() {
         return ptr::null_mut();
     }
-    
+
     debug_println!("create_fast_list_empty ◀ obj={:p}", obj);
     obj
 }
 
 /// Set item at index with ownership transfer (no INCREF)
 pub unsafe fn fast_list_set_item_transfer(
-    list: *mut ffi::PyObject, 
-    index: isize, 
-    item: *mut ffi::PyObject
+    list: *mut ffi::PyObject,
+    index: isize,
+    item: *mut ffi::PyObject,
 ) {
-    debug_println!("fast_list_set_item_transfer ▶ list={:p} index={} item={:p}", list, index, item);
+    debug_println!(
+        "fast_list_set_item_transfer ▶ list={:p} index={} item={:p}",
+        list,
+        index,
+        item
+    );
     let fl = list as *mut PyFastList;
     *(*fl).ob_item.add(index as usize) = item;
     debug_println!("fast_list_set_item_transfer ◀");

@@ -1,11 +1,10 @@
+use pyo3::Python;
 use pyo3::ffi as pyo3_ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::Python;
 
 // Import the unified debug system
 use crate::debug_println;
-use crate::converter::{ToPyObject};
 use crate::pylist::{create_fast_list_empty, fast_list_set_item_transfer};
 use crate::smid::make_string_fast;
 
@@ -17,12 +16,13 @@ unsafe impl Sync for PyObjectPtr {}
 
 // Enum for worker results - either pre-converted PyObject or raw Rust type
 #[derive(Debug)]
-pub enum WorkerResult<T> {
-    PyObject((usize, PyObjectPtr)),  // Pre-converted in worker thread
-    RustType((usize, T)),           // Raw type for main thread conversion
+pub enum WorkerResult {
+    PyObject((usize, PyObjectPtr)), // Pre-converted in worker thread
+                                    // RustType((usize, T)),           // Raw type for main thread conversion
+                                    // PreConvertedVec((usize, Vec<PyObjectPtr>)), // Pre-converted vector elements
 }
 
-unsafe impl<T: Send> Send for WorkerResult<T> {}
+unsafe impl Send for WorkerResult {}
 
 // Helper function to safely set list items with PyObjectPtr
 #[inline(always)]
@@ -85,7 +85,6 @@ fn get_string_at_idx<'a>(list_ptr: &PyObjectPtr, idx: usize, bump: &'a bumpalo::
     }
 }
 
-
 fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     assert!(jobs > 0, "jobs must be > 0");
     assert!(
@@ -105,17 +104,16 @@ fn make_range(len: usize, jobs: usize, i: usize) -> (usize, usize) {
     (start, end)
 }
 
-fn map_pylist_parallel<'py, 'a, T, F1, F2>(
+fn map_pylist_parallel<'py, F1, F2>(
     py: Python<'py>,
-    list: &'a Bound<'py, PyList>,
+    list: &Bound<'py, PyList>,
     jobs: usize,
     inplace: bool,
     make_func: F1,
-) -> PyResult<Py<PyList>>
+) -> PyResult<PyObject>
 where
-    T: ToPyObject + Send + 'static,
     F1: Fn() -> F2 + Send + Sync,
-    F2: Fn(&str) -> T + Send + 'static,
+    F2: for<'a> Fn(&'a str) -> PyObjectPtr + Send + 'static,
 {
     let list_len = list.len();
     let input_list_ptr = PyObjectPtr(list.as_ptr());
@@ -148,13 +146,13 @@ where
         .unwrap();
 
     // Create channel for streaming results from workers to main thread
-    let (sender, receiver) = crossbeam_channel::unbounded::<WorkerResult<T>>();
-    
+    let (sender, receiver) = crossbeam_channel::unbounded::<WorkerResult>();
+
     for job_idx in 0..real_jobs {
         let (range_start, range_stop) = make_range(list_len, real_jobs, job_idx);
         let input_list_ptr = input_list_ptr.clone();
         let sender = sender.clone();
-    
+
         let func = make_func();
         pool.spawn(move || {
             debug_println!(
@@ -168,27 +166,13 @@ where
             let mut bump_manager = BumpAllocatorManager::new(format!("Thread {}", job_idx));
 
             for i in range_start..range_stop {
-                bump_manager.manage_memory();
-
                 // Extract string from input list
                 let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
-                
-                // Process the string
-                let result = func(bump_string);
-                
-                // Compile-time dispatch based on conversion strategy
-                if T::THREAD_SAFE {
-                    // Safe to convert in worker thread (String, bool)
-                    unsafe {
-                        let py_obj = result.to_py_object();
-                        sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
-                    }
-                } else {
-                    // Needs main thread conversion (Vec<T>)
-                    sender.send(WorkerResult::RustType((i, result))).unwrap();
-                }
-            };
-        
+
+                let py_obj = func(bump_string);
+                sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
+                bump_manager.manage_memory();
+            }
 
             debug_println!(
                 "Thread {} finished, final arena size: {}MB",
@@ -196,53 +180,42 @@ where
                 bump_manager.bump().allocated_bytes() / 1024 / 1024
             );
         });
-    };
+    }
 
     // Close sender side to signal when all workers are done
     drop(sender);
 
     // Main thread: apply results as they arrive (streaming updates)
-    for worker_result in receiver {
-        match worker_result {
+    for result in receiver {
+        match result {
             WorkerResult::PyObject((index, py_obj)) => {
                 // Pre-converted in worker thread - just set
                 unsafe {
                     set_list_item(&target_list_ptr, index, py_obj);
                 }
             }
-            WorkerResult::RustType((index, rust_obj)) => {
-                // Convert in main thread with GIL
-                unsafe {
-                    let py_obj = rust_obj.to_py_object();
-                    set_list_item(&target_list_ptr, index, py_obj);
-                }
-            }
         }
     }
-
 
     debug_println!("Passed the barrier");
 
     if inplace {
         Ok(list.clone().into())
     } else {
-        unsafe {
-            Ok(Py::from_owned_ptr(py, target_list_ptr.0))
-        }
+        unsafe { Ok(Py::from_owned_ptr(py, target_list_ptr.0)) }
     }
 }
 
 // Sequential processing for jobs=1 or fallback
-fn map_pylist_sequential<'py, 'a, T, F1, F2>(
+fn map_pylist_sequential<'py, F1, F2>(
     py: Python<'py>,
-    list: &'a Bound<'py, PyList>,
+    list: &Bound<'py, PyList>,
     inplace: bool,
     make_func: F1,
-) -> PyResult<Py<PyList>>
+) -> PyResult<PyObject>
 where
-    T: ToPyObject + Send + 'static,
     F1: Fn() -> F2,
-    F2: Fn(&str) -> T + Send + 'static,
+    F2: for<'a> Fn(&'a str) -> PyObjectPtr,
 {
     let list_len = list.len();
     let input_list_ptr = PyObjectPtr(list.as_ptr());
@@ -256,15 +229,13 @@ where
     if inplace {
         // Modify existing list in place
         for i in 0..list_len {
-            bump_manager.manage_memory();
-
             let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
-            let result = func(bump_string);
+            let py_obj = func(bump_string);
 
             unsafe {
-                let py_obj = result.to_py_object();
                 set_list_item(&input_list_ptr, i, py_obj);
             }
+            bump_manager.manage_memory();
         }
         Ok(list.clone().into())
     } else {
@@ -272,36 +243,31 @@ where
             // Create new list with exact size
             let result_list = create_fast_list_empty(list_len as isize);
             assert!(!result_list.is_null());
+            let result_list_ptr = PyObjectPtr(result_list);
 
             for i in 0..list_len {
-                bump_manager.manage_memory();
-
                 let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
-                let result = func(bump_string);
-
-                let py_obj = result.to_py_object();
-                let result_list_ptr = PyObjectPtr(result_list);
+                let py_obj = func(bump_string);
                 set_list_item(&result_list_ptr, i, py_obj);
+                bump_manager.manage_memory();
             }
 
-            let result_ptr = PyObjectPtr(result_list);
-            Ok(Py::from_owned_ptr(py, result_ptr.0))
+            Ok(Py::from_owned_ptr(py, result_list))
         }
     }
 }
 
 // Main entry point - simplified to just sequential vs parallel
-pub fn map_pylist<'py, 'a, T, F1, F2>(
+pub fn map_pylist<'py, F1, F2>(
     py: Python<'py>,
-    list: &'a Bound<'py, PyList>,
+    list: &Bound<'py, PyList>,
     jobs: usize,
     inplace: bool,
     make_func: F1,
-) -> PyResult<Py<PyList>>
+) -> PyResult<PyObject>
 where
-    T: ToPyObject + Send + 'static,
     F1: Fn() -> F2 + Send + Sync,
-    F2: Fn(&str) -> T + Send + 'static,
+    F2: for<'a> Fn(&'a str) -> PyObjectPtr + Send + 'static,
 {
     if jobs == 1 {
         map_pylist_sequential(py, list, inplace, make_func)
