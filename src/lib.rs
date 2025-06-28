@@ -29,9 +29,7 @@ pub(crate) use debug_println;
 
 pub mod converter;
 pub mod core;
-pub mod pylist;
-pub mod pystring;
-pub mod smid;
+pub mod object;
 pub mod text;
 
 #[pymodule(gil_used = false)]
@@ -177,8 +175,8 @@ mod yurki {
             });
 
             unsafe {
-                pystring::init_faststring_type(m.as_ptr())?;
-                pylist::init_fastlist_type(m.as_ptr())?;
+                object::init_string_type(m.as_ptr())?;
+                object::init_list_type(m.as_ptr())?;
                 Ok(())
             }
         }

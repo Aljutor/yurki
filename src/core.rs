@@ -5,21 +5,19 @@ use pyo3::types::PyList;
 
 // Import the unified debug system
 use crate::debug_println;
-use crate::pylist::{create_fast_list_empty, fast_list_set_item_transfer};
-use crate::smid::make_string_fast;
+use crate::object::{create_fast_list_empty, fast_list_set_item_transfer, make_string_fast};
 
 // hack object to pass raw pointer for PyObject
 #[derive(Clone, Debug)]
 pub struct PyObjectPtr(pub *mut pyo3_ffi::PyObject);
 unsafe impl Send for PyObjectPtr {}
 unsafe impl Sync for PyObjectPtr {}
+impl Copy for PyObjectPtr {}
 
 // Enum for worker results - either pre-converted PyObject or raw Rust type
 #[derive(Debug)]
 pub enum WorkerResult {
-    PyObject((usize, PyObjectPtr)), // Pre-converted in worker thread
-                                    // RustType((usize, T)),           // Raw type for main thread conversion
-                                    // PreConvertedVec((usize, Vec<PyObjectPtr>)), // Pre-converted vector elements
+    PyObject((usize, PyObjectPtr)),
 }
 
 unsafe impl Send for WorkerResult {}
@@ -170,7 +168,11 @@ where
                 let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
 
                 let py_obj = func(bump_string);
-                sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
+                if inplace {
+                    sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
+                } else {
+                    unsafe {set_list_item(&target_list_ptr, i, py_obj)};
+                }
                 bump_manager.manage_memory();
             }
 

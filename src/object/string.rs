@@ -7,28 +7,28 @@ use std::{mem, ptr};
 use crate::debug_println;
 // Memory allocation
 
-/// FastString allocator instance
-static FAST_STRING_ALLOCATOR: MiMalloc = MiMalloc;
+/// String allocator instance
+static STRING_ALLOCATOR: MiMalloc = MiMalloc;
 
 /// Allocate bytes with usize alignment.
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
     let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
-    GlobalAlloc::alloc(&FAST_STRING_ALLOCATOR, layout)
+    GlobalAlloc::alloc(&STRING_ALLOCATOR, layout)
 }
 
 /// Free block with original size for layout consistency.
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
     let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
-    GlobalAlloc::dealloc(&FAST_STRING_ALLOCATOR, ptr as *mut u8, layout)
+    GlobalAlloc::dealloc(&STRING_ALLOCATOR, ptr as *mut u8, layout)
 }
 
-// FastString type definition
+// String type definition
 
-static mut FASTSTRING_TYPE: *mut ffi::PyTypeObject = std::ptr::null_mut();
+static mut STRING_TYPE: *mut ffi::PyTypeObject = std::ptr::null_mut();
 
-unsafe extern "C" fn faststring_alloc(
+unsafe extern "C" fn string_alloc(
     type_object: *mut ffi::PyTypeObject,
     item_count: ffi::Py_ssize_t,
 ) -> *mut ffi::PyObject {
@@ -41,31 +41,31 @@ unsafe extern "C" fn faststring_alloc(
     p
 }
 /// tp_dealloc runs before tp_free
-unsafe extern "C" fn faststring_dealloc(obj: *mut ffi::PyObject) {
-    debug_println!("faststring_dealloc ▶ {:?}", obj);
+unsafe extern "C" fn string_dealloc(obj: *mut ffi::PyObject) {
+    debug_println!("string_dealloc ▶ {:?}", obj);
     // Nothing special to clean for a plain str
     ffi::Py_TYPE(obj).as_ref().unwrap().tp_free.unwrap()(obj as _);
-    debug_println!("faststring_dealloc ◀");
+    debug_println!("string_dealloc ◀");
 }
 
-/// tp_free for yurki.FastString with debug tracing
-unsafe extern "C" fn faststring_free(obj: *mut std::ffi::c_void) {
-    debug_println!("faststring_free ▶ called with obj {:p}", obj);
+/// tp_free for yurki.String with debug tracing
+unsafe extern "C" fn string_free(obj: *mut std::ffi::c_void) {
+    debug_println!("string_free ▶ called with obj {:p}", obj);
     if obj.is_null() {
-        panic!("faststring_free: obj is NULL");
+        panic!("string_free: obj is NULL");
     }
 
     // Header & sanity check
     let py_object = obj as *mut ffi::PyObject;
-    let faststring_type = ptr::read(ptr::addr_of!(FASTSTRING_TYPE));
+    let string_type = ptr::read(ptr::addr_of!(STRING_TYPE));
     debug_println!(
-        "  ob_type = {:p}  FASTSTRING_TYPE = {:p}",
+        "  ob_type = {:p}  STRING_TYPE = {:p}",
         (*py_object).ob_type,
-        faststring_type
+        string_type
     );
 
-    if faststring_type.is_null() || (*py_object).ob_type != faststring_type {
-        debug_println!("  not a FastString instance – returning");
+    if string_type.is_null() || (*py_object).ob_type != string_type {
+        debug_println!("  not a String instance – returning");
         return;
     }
 
@@ -95,17 +95,17 @@ unsafe extern "C" fn faststring_free(obj: *mut std::ffi::c_void) {
     debug_println!("  total_size to free         = {total_size}");
 
     if total_size == 0 || total_size > 10_000_000 {
-        panic!("faststring_free: suspicious total_size = {total_size}");
+        panic!("string_free: suspicious total_size = {total_size}");
     }
 
     // Free memory
     debug_println!("  calling internal_free_bytes …");
     internal_free_bytes(obj, total_size);
-    debug_println!("faststring_free ◀ finished (freed {:p})", obj);
+    debug_println!("string_free ◀ finished (freed {:p})", obj);
 }
 
-/// Initialize FastString type for module.
-pub unsafe fn init_faststring_type(m: *mut ffi::PyObject) -> PyResult<()> {
+/// Initialize String type for module.
+pub unsafe fn init_string_type(m: *mut ffi::PyObject) -> PyResult<()> {
     let mut slots = [
         ffi::PyType_Slot {
             slot: ffi::Py_tp_base as i32,
@@ -117,15 +117,15 @@ pub unsafe fn init_faststring_type(m: *mut ffi::PyObject) -> PyResult<()> {
         }, // Prevent external instantiation
         ffi::PyType_Slot {
             slot: ffi::Py_tp_alloc as i32,
-            pfunc: faststring_alloc as *mut _,
+            pfunc: string_alloc as *mut _,
         },
         ffi::PyType_Slot {
             slot: ffi::Py_tp_dealloc as i32,
-            pfunc: faststring_dealloc as *mut _,
+            pfunc: string_dealloc as *mut _,
         },
         ffi::PyType_Slot {
             slot: ffi::Py_tp_free as i32,
-            pfunc: faststring_free as *mut _,
+            pfunc: string_free as *mut _,
         },
         ffi::PyType_Slot {
             slot: 0,
@@ -136,7 +136,7 @@ pub unsafe fn init_faststring_type(m: *mut ffi::PyObject) -> PyResult<()> {
     let base_size = unsafe { ffi::PyUnicode_Type.tp_basicsize };
 
     let mut spec = ffi::PyType_Spec {
-        name: b"yurki.FastString\0".as_ptr() as *const _,
+        name: b"yurki.String\0".as_ptr() as *const _,
         basicsize: base_size as i32,
         itemsize: 0,
         flags: (ffi::Py_TPFLAGS_DEFAULT
@@ -150,14 +150,14 @@ pub unsafe fn init_faststring_type(m: *mut ffi::PyObject) -> PyResult<()> {
         return Err(PyErr::fetch(Python::assume_gil_acquired()));
     }
 
-    FASTSTRING_TYPE = typ;
-    ffi::PyModule_AddObject(m, b"FastString\0".as_ptr() as *const _ as *mut _, typ as _);
+    STRING_TYPE = typ;
+    ffi::PyModule_AddObject(m, b"String\0".as_ptr() as *const _ as *mut _, typ as _);
     Ok(())
 }
 
-// FastString creation
+// String creation
 
-/// Create a yurki.FastString from UTF-8 text.
+/// Create a yurki.String from UTF-8 text.
 /// Safety: caller must hold the GIL and `text` must be valid UTF-8.
 pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
     debug_println!("create_fast_string: input {:?}", text);
@@ -180,7 +180,7 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
     } else {
         std::mem::size_of::<ffi::PyCompactUnicodeObject>()
     };
-    let header_padded = (*FASTSTRING_TYPE).tp_basicsize as usize;
+    let header_padded = (*STRING_TYPE).tp_basicsize as usize;
     let total_bytes = header_padded + (character_count + 1) * element_size;
 
     // Allocate memory
@@ -198,7 +198,7 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
         &mut (*py_object).ob_base.ob_refcnt as *mut _ as *mut ffi::Py_ssize_t,
         1,
     );
-    (*py_object).ob_base.ob_type = FASTSTRING_TYPE;
+    (*py_object).ob_base.ob_type = STRING_TYPE;
 
     // PyASCII fields
     let ascii_header = &mut *(raw as *mut ffi::PyASCIIObject);
