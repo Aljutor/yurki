@@ -1,4 +1,4 @@
-//! py_unicode_simd.rs – SIMD-accelerated transcoding for Python Stable-ABI code-units
+//! simd.rs – SIMD-accelerated transcoding for Python Stable-ABI code-units
 //!
 //! **Pure Rust, zero-FFI:** Wide-SIMD, branch-free codecs inspired by
 //! Daniel Lemire et al.’s **simdutf**, built entirely on the evolving
@@ -454,6 +454,239 @@ pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
     out
 }
 
+/// SIMD UTF-8 analysis: count characters + find max codepoint in one pass
+pub fn analyze_utf8_simd(input: &[u8]) -> (usize, u32) {
+    let mut char_count = 0usize;
+    let mut max_codepoint = 0u32;
+    let mut i = 0;
+
+    // SIMD ASCII detection and counting
+    while i + LANES_U8 <= input.len() {
+        let chunk = &input[i..i + LANES_U8];
+        let v = U8s::from_slice(chunk);
+
+        if v.simd_lt(U8s::splat(0x80)).all() {
+            // Pure ASCII chunk - each byte is one character
+            char_count += LANES_U8;
+            // Update max with chunk max (SIMD horizontal max)
+            let chunk_max = v.reduce_max();
+            max_codepoint = max_codepoint.max(chunk_max as u32);
+            i += LANES_U8;
+        } else {
+            // Mixed content - fall back to scalar for this chunk
+            while i < input.len() && i < (i + LANES_U8) {
+                let byte = input[i];
+                if byte < 0x80 {
+                    // ASCII
+                    char_count += 1;
+                    max_codepoint = max_codepoint.max(byte as u32);
+                    i += 1;
+                } else {
+                    // Multi-byte UTF-8 sequence
+                    let char_start = i;
+                    while i < input.len() && input[i] & 0xC0 == 0x80
+                        || (i == char_start && input[i] >= 0x80)
+                    {
+                        i += 1;
+                    }
+                    // Decode the character to get codepoint
+                    if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
+                        if let Some(ch) = s.chars().next() {
+                            char_count += 1;
+                            max_codepoint = max_codepoint.max(ch as u32);
+                        }
+                    }
+                }
+            }
+            break; // Exit SIMD loop after handling mixed chunk
+        }
+    }
+
+    // Handle remaining bytes with scalar processing
+    while i < input.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            char_count += 1;
+            max_codepoint = max_codepoint.max(byte as u32);
+            i += 1;
+        } else {
+            // Multi-byte UTF-8 - decode properly
+            let char_start = i;
+            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
+                i += 1;
+            }
+            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
+                if let Some(ch) = s.chars().next() {
+                    char_count += 1;
+                    max_codepoint = max_codepoint.max(ch as u32);
+                }
+            }
+        }
+    }
+
+    (char_count, max_codepoint)
+}
+
+/// UTF-8 → UCS-1 with SIMD acceleration (for ASCII/Latin-1 strings)
+pub fn utf8_to_ucs1_simd(input: &[u8], output: &mut [u8]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+
+    // SIMD ASCII fast path
+    while i + LANES_U8 <= input.len() && out_pos + LANES_U8 <= output.len() {
+        let chunk = &input[i..i + LANES_U8];
+        let v = U8s::from_slice(chunk);
+
+        if v.simd_lt(U8s::splat(0x80)).all() {
+            // Pure ASCII - direct copy
+            output[out_pos..out_pos + LANES_U8].copy_from_slice(chunk);
+            out_pos += LANES_U8;
+            i += LANES_U8;
+        } else {
+            break; // Exit SIMD loop for mixed content
+        }
+    }
+
+    // Scalar fallback for remaining bytes
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Decode UTF-8 to get codepoint
+            let char_start = i;
+            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
+                i += 1;
+            }
+            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
+                if let Some(ch) = s.chars().next() {
+                    let cp = ch as u32;
+                    if cp <= 0xFF {
+                        output[out_pos] = cp as u8;
+                        out_pos += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    out_pos
+}
+
+/// UTF-8 → UCS-2 with SIMD acceleration
+pub fn utf8_to_ucs2_simd(input: &[u8], output: &mut [u16]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+
+    // SIMD ASCII fast path
+    while i + LANES_U8 <= input.len() && out_pos + LANES_U8 <= output.len() {
+        let chunk = &input[i..i + LANES_U8];
+        let v = U8s::from_slice(chunk);
+
+        if v.simd_lt(U8s::splat(0x80)).all() {
+            // Pure ASCII - zero-extend to u16
+            for j in 0..LANES_U8 {
+                output[out_pos + j] = chunk[j] as u16;
+            }
+            out_pos += LANES_U8;
+            i += LANES_U8;
+        } else {
+            break; // Exit SIMD loop for mixed content
+        }
+    }
+
+    // Scalar fallback for UTF-8 decoding
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte as u16;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Decode UTF-8 sequence
+            let char_start = i;
+            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
+                i += 1;
+            }
+            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
+                for ch in s.chars() {
+                    if out_pos >= output.len() {
+                        break;
+                    }
+                    let cp = ch as u32;
+                    if cp <= 0xFFFF && (cp < 0xD800 || cp > 0xDFFF) {
+                        // BMP codepoint, not surrogate
+                        output[out_pos] = cp as u16;
+                        out_pos += 1;
+                    } else if cp > 0xFFFF {
+                        // Encode as surrogate pair
+                        if out_pos + 1 < output.len() {
+                            let cp = cp - 0x10000;
+                            output[out_pos] = 0xD800 | ((cp >> 10) as u16);
+                            output[out_pos + 1] = 0xDC00 | ((cp & 0x3FF) as u16);
+                            out_pos += 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out_pos
+}
+
+/// UTF-8 → UCS-4 with SIMD acceleration
+pub fn utf8_to_ucs4_simd(input: &[u8], output: &mut [u32]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+
+    // SIMD ASCII fast path
+    while i + LANES_U8 <= input.len() && out_pos + LANES_U8 <= output.len() {
+        let chunk = &input[i..i + LANES_U8];
+        let v = U8s::from_slice(chunk);
+
+        if v.simd_lt(U8s::splat(0x80)).all() {
+            // Pure ASCII - zero-extend to u32
+            for j in 0..LANES_U8 {
+                output[out_pos + j] = chunk[j] as u32;
+            }
+            out_pos += LANES_U8;
+            i += LANES_U8;
+        } else {
+            break; // Exit SIMD loop for mixed content
+        }
+    }
+
+    // Scalar fallback for UTF-8 decoding
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte as u32;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Decode UTF-8 sequence
+            let char_start = i;
+            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
+                i += 1;
+            }
+            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
+                for ch in s.chars() {
+                    if out_pos >= output.len() {
+                        break;
+                    }
+                    output[out_pos] = ch as u32;
+                    out_pos += 1;
+                }
+            }
+        }
+    }
+
+    out_pos
+}
+
 /// SIMD-accelerated Python-string → UTF-8, allocated inside a bumpalo arena.
 pub fn convert_pystring<'a>(o: *mut pyo3::ffi::PyObject, bump: &'a bumpalo::Bump) -> &'a str {
     unsafe {
@@ -497,8 +730,78 @@ mod tests {
     use super::*;
     use std::borrow::Cow::*;
 
+    /* ── UTF-8 → UCS* Conversion Tests ────────────────────────────────── */
+
+    #[test]
+    fn utf8_to_ucs_basic() {
+        // ASCII test
+        let ascii = "Hello";
+        let mut ucs1_buf = [0u8; 10];
+        let mut ucs2_buf = [0u16; 10];
+        let mut ucs4_buf = [0u32; 10];
+
+        let len1 = utf8_to_ucs1_simd(ascii.as_bytes(), &mut ucs1_buf);
+        let len2 = utf8_to_ucs2_simd(ascii.as_bytes(), &mut ucs2_buf);
+        let len4 = utf8_to_ucs4_simd(ascii.as_bytes(), &mut ucs4_buf);
+
+        assert_eq!(len1, 5);
+        assert_eq!(len2, 5);
+        assert_eq!(len4, 5);
+        assert_eq!(&ucs1_buf[..len1], ascii.as_bytes());
+    }
+
+    #[test]
+    fn utf8_to_ucs_roundtrip() {
+        let test_cases = vec!["Hello", "café", "🦀", "Hello, 世界!"];
+
+        for case in test_cases {
+            // UTF-8 → UCS-2 → UTF-8
+            let mut ucs2_buf = vec![0u16; case.chars().count() * 2]; // Extra space for surrogates
+            let ucs2_len = utf8_to_ucs2_simd(case.as_bytes(), &mut ucs2_buf);
+            let back_to_utf8 = ucs2_to_utf8(&ucs2_buf[..ucs2_len]);
+            assert_eq!(case.as_bytes(), &back_to_utf8);
+
+            // UTF-8 → UCS-4 → UTF-8
+            let mut ucs4_buf = vec![0u32; case.chars().count()];
+            let ucs4_len = utf8_to_ucs4_simd(case.as_bytes(), &mut ucs4_buf);
+            let back_to_utf8 = ucs4_to_utf8(&ucs4_buf[..ucs4_len]);
+            assert_eq!(case.as_bytes(), &back_to_utf8);
+        }
+    }
+
+    #[test]
+    fn utf8_analysis_accuracy() {
+        let test_cases = vec![
+            ("", 0, 0),
+            ("A", 1, 65),
+            ("Hello", 5, 111),  // 'o' = 111
+            ("café", 4, 233),   // 'é' = 233
+            ("🦀", 1, 0x1F980), // Crab emoji
+        ];
+
+        for (input, expected_count, expected_max) in test_cases {
+            let (count, max_cp) = analyze_utf8_simd(input.as_bytes());
+            assert_eq!(
+                count, expected_count,
+                "Character count mismatch for '{}'",
+                input
+            );
+            assert_eq!(
+                max_cp, expected_max,
+                "Max codepoint mismatch for '{}'",
+                input
+            );
+
+            // Verify against scalar implementation
+            let scalar_count = input.chars().count();
+            let scalar_max = input.chars().map(|c| c as u32).max().unwrap_or(0);
+            assert_eq!(count, scalar_count);
+            assert_eq!(max_cp, scalar_max);
+        }
+    }
+
     /* ── UCS1 (Latin-1) Tests ─────────────────────────────────────────── */
-    
+
     #[test]
     fn ucs1_empty() {
         assert_eq!(ucs1_to_utf8(b""), Borrowed(""));
@@ -517,7 +820,7 @@ mod tests {
     fn ucs1_single_char() {
         assert_eq!(ucs1_to_utf8(b"A"), Borrowed("A"));
         assert_eq!(&*ucs1_to_utf8(&[0xFF]), "ÿ");
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs1_to_utf8_bump(b"Z", &bump), "Z");
         assert_eq!(ucs1_to_utf8_bump(&[0xA9], &bump), "©"); // Copyright symbol
@@ -527,7 +830,7 @@ mod tests {
     fn ucs1_latin1() {
         let b = [0x48, 0xE9, 0x6C, 0x6C, 0xF6]; // "Héllö"
         assert_eq!(&*ucs1_to_utf8(&b), "Héllö");
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs1_to_utf8_bump(&b, &bump), "Héllö");
     }
@@ -551,7 +854,11 @@ mod tests {
     fn ucs1_large_mixed() {
         let mut input = Vec::new();
         for i in 0..1000 {
-            input.push(if i % 4 == 0 { 0x80 + (i % 128) as u8 } else { b'A' + (i % 26) as u8 });
+            input.push(if i % 4 == 0 {
+                0x80 + (i % 128) as u8
+            } else {
+                b'A' + (i % 26) as u8
+            });
         }
         let result = ucs1_to_utf8(&input);
         assert!(matches!(result, Owned(_)));
@@ -564,14 +871,14 @@ mod tests {
         let result = ucs1_to_utf8(&all_latin1);
         assert!(matches!(result, Owned(_)));
         assert!(std::str::from_utf8(result.as_bytes()).is_ok());
-        
+
         let bump = bumpalo::Bump::new();
         let bump_result = ucs1_to_utf8_bump(&all_latin1, &bump);
         assert_eq!(result.as_bytes(), bump_result.as_bytes());
     }
 
     /* ── UCS2 (UTF-16) Tests ──────────────────────────────────────────── */
-    
+
     #[test]
     fn ucs2_empty() {
         assert_eq!(ucs2_to_utf8(&[]), Vec::<u8>::new());
@@ -583,7 +890,7 @@ mod tests {
     fn ucs2_ascii() {
         let ascii: Vec<u16> = "Hello".chars().map(|c| c as u16).collect();
         assert_eq!(ucs2_to_utf8(&ascii), "Hello".as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&ascii, &bump), "Hello");
     }
@@ -593,7 +900,7 @@ mod tests {
         let s = "漢字";
         let v: Vec<u16> = s.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&v), s.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&v, &bump), s);
     }
@@ -603,7 +910,7 @@ mod tests {
         let s = "🦀";
         let v: Vec<u16> = s.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&v), s.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&v, &bump), s);
     }
@@ -613,7 +920,7 @@ mod tests {
         let emoji_family = "👨‍👩‍👧‍👦";
         let utf16: Vec<u16> = emoji_family.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&utf16), emoji_family.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), emoji_family);
     }
@@ -623,7 +930,7 @@ mod tests {
         let mixed = "A漢🦀Ω";
         let utf16: Vec<u16> = mixed.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&utf16), mixed.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), mixed);
     }
@@ -640,13 +947,13 @@ mod tests {
         let korean = "안녕하세요";
         let utf16: Vec<u16> = korean.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&utf16), korean.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), korean);
     }
 
     /* ── UCS4 (UTF-32) Tests ──────────────────────────────────────────── */
-    
+
     #[test]
     fn ucs4_empty() {
         assert_eq!(ucs4_to_utf8(&[]), Vec::<u8>::new());
@@ -658,7 +965,7 @@ mod tests {
     fn ucs4_ascii() {
         let ascii: Vec<u32> = "Hello".chars().map(|c| c as u32).collect();
         assert_eq!(ucs4_to_utf8(&ascii), "Hello".as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs4_to_utf8_bump(&ascii, &bump), "Hello");
     }
@@ -667,7 +974,7 @@ mod tests {
     fn ucs4_basic() {
         let cps = [0x41u32, 0x03A9u32]; // 'A', 'Ω'
         assert_eq!(ucs4_to_utf8(&cps), "AΩ".as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs4_to_utf8_bump(&cps, &bump), "AΩ");
     }
@@ -676,7 +983,7 @@ mod tests {
     fn ucs4_supp() {
         let cps = [0x1F984u32]; // 🦄
         assert_eq!(ucs4_to_utf8(&cps), "🦄".as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs4_to_utf8_bump(&cps, &bump), "🦄");
     }
@@ -691,7 +998,7 @@ mod tests {
         ];
         let expected = "Aé中🦄";
         assert_eq!(ucs4_to_utf8(&codepoints), expected.as_bytes());
-        
+
         let bump = bumpalo::Bump::new();
         assert_eq!(ucs4_to_utf8_bump(&codepoints, &bump), expected);
     }
@@ -716,7 +1023,7 @@ mod tests {
         ];
         let result = ucs4_to_utf8(&boundary_points);
         assert!(std::str::from_utf8(&result).is_ok());
-        
+
         let bump = bumpalo::Bump::new();
         let bump_result = ucs4_to_utf8_bump(&boundary_points, &bump);
         assert_eq!(result, bump_result.as_bytes());
@@ -739,18 +1046,18 @@ mod tests {
     fn simd_vs_scalar_consistency() {
         // Test that SIMD and scalar paths produce identical results
         let test_cases = vec![
-            vec![0x41, 0x42, 0x43], // Pure ASCII
-            vec![0x80, 0x81, 0x82], // Pure extended
-            vec![0x41, 0x80, 0x42, 0x81], // Mixed
+            vec![0x41, 0x42, 0x43],        // Pure ASCII
+            vec![0x80, 0x81, 0x82],        // Pure extended
+            vec![0x41, 0x80, 0x42, 0x81],  // Mixed
             (0..255).collect::<Vec<u8>>(), // Full range
         ];
-        
+
         for case in test_cases {
             let result1 = ucs1_to_utf8(&case);
-            
+
             let bump = bumpalo::Bump::new();
             let result2 = ucs1_to_utf8_bump(&case, &bump);
-            
+
             assert_eq!(result1.as_bytes(), result2.as_bytes());
         }
     }
@@ -761,12 +1068,12 @@ mod tests {
         let latin1_input: Vec<u8> = (128..=255).collect();
         let utf8_output = ucs1_to_utf8(&latin1_input);
         assert!(utf8_output.len() <= latin1_input.len() * 2);
-        
+
         // UCS2: output <= input.len() * 3 for BMP, * 4 for surrogates
         let bmp_input: Vec<u16> = vec![0x4E2D, 0x6587]; // 中文
         let utf8_output = ucs2_to_utf8(&bmp_input);
         assert!(utf8_output.len() <= bmp_input.len() * 3);
-        
+
         // UCS4: output <= input.len() * 4
         let unicode_input: Vec<u32> = vec![0x1F984, 0x1F680]; // 🦄🚀
         let utf8_output = ucs4_to_utf8(&unicode_input);

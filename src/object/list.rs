@@ -1,25 +1,21 @@
 //! yurki::object::list  —  immutable list with custom allocator
 #[allow(static_mut_refs)]
-
 use pyo3::{ffi, prelude::*};
-use std::{
-    alloc,
-    mem,
-    os::raw::c_int,
-    ptr,
-};
+use std::{alloc, mem, os::raw::c_int, ptr};
 
 use crate::debug_println;
 
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>())
+        .expect("List: invalid layout");
     alloc::alloc(layout)
 }
 
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>())
+        .expect("List: invalid layout");
     alloc::dealloc(ptr as *mut u8, layout)
 }
 
@@ -124,7 +120,7 @@ unsafe extern "C" fn list_ass_item(
 ) -> c_int {
     let fl = obj as *mut PyList;
     let size = (*fl).ob_base.ob_size;
-    
+
     // Check bounds
     if index < 0 || index >= size {
         ffi::PyErr_SetString(
@@ -133,18 +129,18 @@ unsafe extern "C" fn list_ass_item(
         );
         return -1;
     }
-    
+
     // Replace item (DECREF old, assign new)
     let old_item = *(*fl).ob_item.add(index as usize);
     if !old_item.is_null() {
         ffi::Py_DECREF(old_item);
     }
-    
+
     if !value.is_null() {
         ffi::Py_INCREF(value);
     }
     *(*fl).ob_item.add(index as usize) = value;
-    
+
     0
 }
 
@@ -155,7 +151,8 @@ unsafe extern "C" fn list_inplace_concat(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (in-place concatenation not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (in-place concatenation not allowed)\0"
+            .as_ptr() as *const _,
     );
     ptr::null_mut()
 }
@@ -167,7 +164,8 @@ unsafe extern "C" fn list_inplace_repeat(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (in-place repetition not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (in-place repetition not allowed)\0"
+            .as_ptr() as *const _,
     );
     ptr::null_mut()
 }
@@ -179,7 +177,8 @@ unsafe extern "C" fn immutable_append(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (append not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (append not allowed)\0".as_ptr()
+            as *const _,
     );
     ptr::null_mut()
 }
@@ -190,7 +189,8 @@ unsafe extern "C" fn immutable_extend(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (extend not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (extend not allowed)\0".as_ptr()
+            as *const _,
     );
     ptr::null_mut()
 }
@@ -201,7 +201,8 @@ unsafe extern "C" fn immutable_insert(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (insert not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (insert not allowed)\0".as_ptr()
+            as *const _,
     );
     ptr::null_mut()
 }
@@ -212,7 +213,8 @@ unsafe extern "C" fn immutable_remove(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (remove not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (remove not allowed)\0".as_ptr()
+            as *const _,
     );
     ptr::null_mut()
 }
@@ -234,7 +236,8 @@ unsafe extern "C" fn immutable_clear(
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
-        b"'yurki.List' object is immutable: cannot resize (clear not allowed)\0".as_ptr() as *const _,
+        b"'yurki.List' object is immutable: cannot resize (clear not allowed)\0".as_ptr()
+            as *const _,
     );
     ptr::null_mut()
 }
@@ -263,7 +266,8 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_insert,
         },
         ml_flags: ffi::METH_VARARGS,
-        ml_doc: b"insert(index, object) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
+        ml_doc: b"insert(index, object) -- Unsupported: yurki.List is immutable\0".as_ptr()
+            as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"remove\0".as_ptr() as *const _,
