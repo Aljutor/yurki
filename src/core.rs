@@ -5,7 +5,7 @@ use pyo3::types::PyList;
 
 // Import the unified debug system
 use crate::debug_println;
-use crate::object::{create_list_empty, list_set_item_transfer, make_string_fast};
+use crate::object::{create_list_empty, list_set_item_transfer, convert_pystring};
 
 // hack object to pass raw pointer for PyObject
 #[derive(Clone, Debug)]
@@ -79,9 +79,9 @@ impl BumpAllocatorManager {
 
 fn get_string_at_idx<'a>(list_ptr: &PyObjectPtr, idx: usize, bump: &'a bumpalo::Bump) -> &'a str {
     unsafe {
-        let str_ptr = pyo3_ffi::PyList_GetItem(list_ptr.0, idx as isize);
+        let str_ptr = pyo3_ffi::PyList_GET_ITEM(list_ptr.0, idx as isize);
         assert!(!str_ptr.is_null());
-        make_string_fast(str_ptr, bump)
+        convert_pystring(str_ptr, bump)
     }
 }
 

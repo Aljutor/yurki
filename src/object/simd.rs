@@ -19,11 +19,11 @@ use core::simd::prelude::SimdUint; // `.cast()` lives here on nightly-2025-06
 use std::borrow::Cow;
 use std::ptr;
 
-/* ===================================================================== */
-/*                      SIMD lane-width selection                         */
-/* ===================================================================== */
+/* ==================================================================== */
+/*                      SIMD lane-width selection                       */
+/* ==================================================================== */
 
-/* ── u8 ────────────────────────────────────────────────────────────── */
+/* ── u8 ───────────────────────────────────────────────────────────────*/
 #[cfg(target_feature = "avx512bw")]
 type U8s = Simd<u8, 64>;
 #[cfg(target_feature = "avx512bw")]
@@ -39,7 +39,7 @@ type U8s = Simd<u8, 16>;
 #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
 const LANES_U8: usize = 16;
 
-/* ── u16 ───────────────────────────────────────────────────────────── */
+/* ── u16 ──────────────────────────────────────────────────────────────*/
 #[cfg(target_feature = "avx512bw")]
 type U16s = Simd<u16, 32>;
 #[cfg(target_feature = "avx512bw")]
@@ -55,7 +55,7 @@ type U16s = Simd<u16, 8>;
 #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
 const LANES_U16: usize = 8;
 
-/* ── u32 ───────────────────────────────────────────────────────────── */
+/* ── u32 ──────────────────────────────────────────────────────────────*/
 #[cfg(target_feature = "avx512bw")]
 type U32s = Simd<u32, 16>;
 #[cfg(target_feature = "avx512bw")]
@@ -72,7 +72,7 @@ type U32s = Simd<u32, 4>;
 const LANES_U32: usize = 4;
 
 /* ===================================================================== */
-/*               Py_UCS1 (Latin-1) → UTF-8                                */
+/*               Py_UCS1 (Latin-1) → UTF-8                               */
 /* ===================================================================== */
 
 /// Convert a Latin-1 slice to UTF-8 using bump allocator.
@@ -235,7 +235,7 @@ fn expand_latin1_block(block: &[u8], out: &mut Vec<u8>) {
 }
 
 /* ===================================================================== */
-/*               Py_UCS2 (UTF-16) → UTF-8                                 */
+/*               Py_UCS2 (UTF-16) → UTF-8                                */
 /* ===================================================================== */
 
 #[inline]
@@ -341,7 +341,7 @@ fn expand_ucs2_block(block: &[u16], out: &mut Vec<u8>) {
 }
 
 /* ===================================================================== */
-/*                       Helper routines                                  */
+/*                       Helper routines                                 */
 /* ===================================================================== */
 
 #[inline(always)]
@@ -399,7 +399,7 @@ fn push_utf32_scalar(cp: u32, out: &mut Vec<u8>) {
 }
 
 /* ===================================================================== */
-/*               Py_UCS4 (UTF-32) → UTF-8                                 */
+/*               Py_UCS4 (UTF-32) → UTF-8                                */
 /* ===================================================================== */
 
 #[inline]
@@ -455,7 +455,7 @@ pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
 }
 
 /// SIMD-accelerated Python-string → UTF-8, allocated inside a bumpalo arena.
-pub fn make_string_fast<'a>(o: *mut pyo3::ffi::PyObject, bump: &'a bumpalo::Bump) -> &'a str {
+pub fn convert_pystring<'a>(o: *mut pyo3::ffi::PyObject, bump: &'a bumpalo::Bump) -> &'a str {
     unsafe {
         use pyo3::ffi as pyo3_ffi;
         assert!(!o.is_null());
@@ -489,33 +489,7 @@ pub fn make_string_fast<'a>(o: *mut pyo3::ffi::PyObject, bump: &'a bumpalo::Bump
 }
 
 /* ===================================================================== */
-/*                Unsafe unchecked-to-String convenience                  */
-/* ===================================================================== */
-
-pub trait IntoUncheckedString {
-    /// Convert the buffer into `String` without validating UTF-8 again.
-    ///
-    /// # Safety
-    /// The caller must guarantee the bytes were produced by these codecs.
-    unsafe fn into_unchecked_string(self) -> String;
-}
-
-impl IntoUncheckedString for Cow<'_, str> {
-    unsafe fn into_unchecked_string(self) -> String {
-        match self {
-            Cow::Borrowed(s) => s.to_owned(),
-            Cow::Owned(s) => s,
-        }
-    }
-}
-impl IntoUncheckedString for Vec<u8> {
-    unsafe fn into_unchecked_string(self) -> String {
-        String::from_utf8_unchecked(self)
-    }
-}
-
-/* ===================================================================== */
-/*                               Tests                                    */
+/*                               Tests                                   */
 /* ===================================================================== */
 
 #[cfg(test)]
@@ -523,40 +497,279 @@ mod tests {
     use super::*;
     use std::borrow::Cow::*;
 
-    /* ── Py_UCS1 ─────────────────────────────────────────────── */
+    /* ── UCS1 (Latin-1) Tests ─────────────────────────────────────────── */
+    
+    #[test]
+    fn ucs1_empty() {
+        assert_eq!(ucs1_to_utf8(b""), Borrowed(""));
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs1_to_utf8_bump(b"", &bump), "");
+    }
+
     #[test]
     fn ucs1_ascii() {
         assert_eq!(ucs1_to_utf8(b"Hello"), Borrowed("Hello"));
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs1_to_utf8_bump(b"Hello, World!", &bump), "Hello, World!");
     }
+
+    #[test]
+    fn ucs1_single_char() {
+        assert_eq!(ucs1_to_utf8(b"A"), Borrowed("A"));
+        assert_eq!(&*ucs1_to_utf8(&[0xFF]), "ÿ");
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs1_to_utf8_bump(b"Z", &bump), "Z");
+        assert_eq!(ucs1_to_utf8_bump(&[0xA9], &bump), "©"); // Copyright symbol
+    }
+
     #[test]
     fn ucs1_latin1() {
         let b = [0x48, 0xE9, 0x6C, 0x6C, 0xF6]; // "Héllö"
         assert_eq!(&*ucs1_to_utf8(&b), "Héllö");
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs1_to_utf8_bump(&b, &bump), "Héllö");
     }
 
-    /* ── Py_UCS2 ─────────────────────────────────────────────── */
+    #[test]
+    fn ucs1_mixed_content() {
+        let mixed = b"Hello \xE9\xE8\xEA world \xFF!";
+        let result = ucs1_to_utf8(mixed);
+        assert!(matches!(result, Owned(_)));
+        assert_eq!(&*result, "Hello éèê world ÿ!");
+    }
+
+    #[test]
+    fn ucs1_large_ascii() {
+        let large_ascii = "A".repeat(1000);
+        let bytes = large_ascii.as_bytes();
+        assert_eq!(ucs1_to_utf8(bytes), Borrowed(&large_ascii));
+    }
+
+    #[test]
+    fn ucs1_large_mixed() {
+        let mut input = Vec::new();
+        for i in 0..1000 {
+            input.push(if i % 4 == 0 { 0x80 + (i % 128) as u8 } else { b'A' + (i % 26) as u8 });
+        }
+        let result = ucs1_to_utf8(&input);
+        assert!(matches!(result, Owned(_)));
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn ucs1_all_latin1_chars() {
+        let all_latin1: Vec<u8> = (128..=255).collect();
+        let result = ucs1_to_utf8(&all_latin1);
+        assert!(matches!(result, Owned(_)));
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+        
+        let bump = bumpalo::Bump::new();
+        let bump_result = ucs1_to_utf8_bump(&all_latin1, &bump);
+        assert_eq!(result.as_bytes(), bump_result.as_bytes());
+    }
+
+    /* ── UCS2 (UTF-16) Tests ──────────────────────────────────────────── */
+    
+    #[test]
+    fn ucs2_empty() {
+        assert_eq!(ucs2_to_utf8(&[]), Vec::<u8>::new());
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&[], &bump), "");
+    }
+
+    #[test]
+    fn ucs2_ascii() {
+        let ascii: Vec<u16> = "Hello".chars().map(|c| c as u16).collect();
+        assert_eq!(ucs2_to_utf8(&ascii), "Hello".as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&ascii, &bump), "Hello");
+    }
+
     #[test]
     fn ucs2_basic() {
         let s = "漢字";
         let v: Vec<u16> = s.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&v), s.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&v, &bump), s);
     }
+
     #[test]
     fn ucs2_emoji() {
         let s = "🦀";
         let v: Vec<u16> = s.encode_utf16().collect();
         assert_eq!(ucs2_to_utf8(&v), s.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&v, &bump), s);
     }
 
-    /* ── Py_UCS4 ─────────────────────────────────────────────── */
+    #[test]
+    fn ucs2_surrogate_pairs() {
+        let emoji_family = "👨‍👩‍👧‍👦";
+        let utf16: Vec<u16> = emoji_family.encode_utf16().collect();
+        assert_eq!(ucs2_to_utf8(&utf16), emoji_family.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), emoji_family);
+    }
+
+    #[test]
+    fn ucs2_mixed_bmp_supplementary() {
+        let mixed = "A漢🦀Ω";
+        let utf16: Vec<u16> = mixed.encode_utf16().collect();
+        assert_eq!(ucs2_to_utf8(&utf16), mixed.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), mixed);
+    }
+
+    #[test]
+    fn ucs2_large_ascii() {
+        let large_ascii = "Z".repeat(1000);
+        let utf16: Vec<u16> = large_ascii.encode_utf16().collect();
+        assert_eq!(ucs2_to_utf8(&utf16), large_ascii.as_bytes());
+    }
+
+    #[test]
+    fn ucs2_three_byte_utf8() {
+        let korean = "안녕하세요";
+        let utf16: Vec<u16> = korean.encode_utf16().collect();
+        assert_eq!(ucs2_to_utf8(&utf16), korean.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs2_to_utf8_bump(&utf16, &bump), korean);
+    }
+
+    /* ── UCS4 (UTF-32) Tests ──────────────────────────────────────────── */
+    
+    #[test]
+    fn ucs4_empty() {
+        assert_eq!(ucs4_to_utf8(&[]), Vec::<u8>::new());
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs4_to_utf8_bump(&[], &bump), "");
+    }
+
+    #[test]
+    fn ucs4_ascii() {
+        let ascii: Vec<u32> = "Hello".chars().map(|c| c as u32).collect();
+        assert_eq!(ucs4_to_utf8(&ascii), "Hello".as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs4_to_utf8_bump(&ascii, &bump), "Hello");
+    }
+
     #[test]
     fn ucs4_basic() {
         let cps = [0x41u32, 0x03A9u32]; // 'A', 'Ω'
         assert_eq!(ucs4_to_utf8(&cps), "AΩ".as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs4_to_utf8_bump(&cps, &bump), "AΩ");
     }
+
     #[test]
     fn ucs4_supp() {
         let cps = [0x1F984u32]; // 🦄
         assert_eq!(ucs4_to_utf8(&cps), "🦄".as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs4_to_utf8_bump(&cps, &bump), "🦄");
+    }
+
+    #[test]
+    fn ucs4_full_range() {
+        let codepoints = vec![
+            0x00000041u32, // 'A' (1 byte)
+            0x000000E9u32, // 'é' (2 bytes)
+            0x00004E2Du32, // '中' (3 bytes)
+            0x0001F984u32, // '🦄' (4 bytes)
+        ];
+        let expected = "Aé中🦄";
+        assert_eq!(ucs4_to_utf8(&codepoints), expected.as_bytes());
+        
+        let bump = bumpalo::Bump::new();
+        assert_eq!(ucs4_to_utf8_bump(&codepoints, &bump), expected);
+    }
+
+    #[test]
+    fn ucs4_large_ascii() {
+        let large_ascii: Vec<u32> = "X".repeat(1000).chars().map(|c| c as u32).collect();
+        let expected = "X".repeat(1000);
+        assert_eq!(ucs4_to_utf8(&large_ascii), expected.as_bytes());
+    }
+
+    #[test]
+    fn ucs4_boundary_codepoints() {
+        let boundary_points = vec![
+            0x0000007Fu32, // Last 1-byte
+            0x00000080u32, // First 2-byte
+            0x000007FFu32, // Last 2-byte
+            0x00000800u32, // First 3-byte
+            0x0000FFFFu32, // Last 3-byte
+            0x00010000u32, // First 4-byte
+            0x0010FFFFu32, // Last valid Unicode
+        ];
+        let result = ucs4_to_utf8(&boundary_points);
+        assert!(std::str::from_utf8(&result).is_ok());
+        
+        let bump = bumpalo::Bump::new();
+        let bump_result = ucs4_to_utf8_bump(&boundary_points, &bump);
+        assert_eq!(result, bump_result.as_bytes());
+    }
+
+    /* ── Round-trip and Property Tests ────────────────────────────────── */
+
+    #[test]
+    fn roundtrip_ucs1_utf8() {
+        for i in 0..=255u8 {
+            let input = [i];
+            let utf8_result = ucs1_to_utf8(&input);
+            let back_to_utf16: Vec<u16> = utf8_result.chars().map(|c| c as u16).collect();
+            let utf8_from_utf16 = ucs2_to_utf8(&back_to_utf16);
+            assert_eq!(utf8_result.as_bytes(), &utf8_from_utf16);
+        }
+    }
+
+    #[test]
+    fn simd_vs_scalar_consistency() {
+        // Test that SIMD and scalar paths produce identical results
+        let test_cases = vec![
+            vec![0x41, 0x42, 0x43], // Pure ASCII
+            vec![0x80, 0x81, 0x82], // Pure extended
+            vec![0x41, 0x80, 0x42, 0x81], // Mixed
+            (0..255).collect::<Vec<u8>>(), // Full range
+        ];
+        
+        for case in test_cases {
+            let result1 = ucs1_to_utf8(&case);
+            
+            let bump = bumpalo::Bump::new();
+            let result2 = ucs1_to_utf8_bump(&case, &bump);
+            
+            assert_eq!(result1.as_bytes(), result2.as_bytes());
+        }
+    }
+
+    #[test]
+    fn output_length_bounds() {
+        // UCS1: output <= input.len() * 2
+        let latin1_input: Vec<u8> = (128..=255).collect();
+        let utf8_output = ucs1_to_utf8(&latin1_input);
+        assert!(utf8_output.len() <= latin1_input.len() * 2);
+        
+        // UCS2: output <= input.len() * 3 for BMP, * 4 for surrogates
+        let bmp_input: Vec<u16> = vec![0x4E2D, 0x6587]; // 中文
+        let utf8_output = ucs2_to_utf8(&bmp_input);
+        assert!(utf8_output.len() <= bmp_input.len() * 3);
+        
+        // UCS4: output <= input.len() * 4
+        let unicode_input: Vec<u32> = vec![0x1F984, 0x1F680]; // 🦄🚀
+        let utf8_output = ucs4_to_utf8(&unicode_input);
+        assert!(utf8_output.len() <= unicode_input.len() * 4);
     }
 }
