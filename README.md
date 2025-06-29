@@ -27,38 +27,39 @@ maturin develop --release
 
 ## Performance
 
-### Implementation Details
+### Implementation notes
 
-- **Custom Unicode Reader**: Thread-safe Python string conversion avoiding PyUnicode_AsUTF8AndSize limitations pre-Python 3.13
-- **Bump Allocator**: bumpalo-based memory allocation with 256KB initial capacity per thread and automatic reset
-- **Parallel Processing**: Rayon-based thread pool
+- **Custom Python types**: `yurki.List` (immutable) and `yurki.String` match the Python 3.12 object layout but use a Rust-side allocator, avoiding the CPython heap.  
+- **SIMD Unicode reader**: vectorised path that converts Python text to Rust `&str`.  
+- **Bump allocator**: thread-local arena for short-lived allocations; resets automatically, minimising locking and fragmentation.  
+- **Parallel processing**: Rayon work pool distributes work across available cores.
 
 ### Benchmark Results (Large Datasets)
 
 **Find Operations**:
 
-- 4 jobs: 2.0s vs Python: 12.5s (6.2x speedup)
-- 1 job: 3.2s vs Python: 12.5s (3.9x speedup)
+- 4 jobs: 0.72s vs Python: 12.49s (**17.4x speedup**)
+- 1 job: 2.30s vs Python: 12.49s (5.4x speedup)
 
 **Match Operations**:
 
-- 4 jobs: 1.8s vs Python: 11.8s (6.6x speedup)
-- 1 job: 1.9s vs Python: 11.8s (6.2x speedup)
+- 4 jobs: 0.33s vs Python: 11.67s (**35.2x speedup**)
+- 1 job: 1.27s vs Python: 11.67s (9.2x speedup)
 
 **Capture Operations**:
 
-- 4 jobs: 5.9s vs Python: 16.9s (2.9x speedup)
-- 1 job: 7.9s vs Python: 16.9s (2.1x speedup)
+- 4 jobs: 2.83s vs Python: 16.97s (**6.0x speedup**)
+- 1 job: 6.58s vs Python: 16.97s (2.6x speedup)
 
 **Replace Operations**:
 
-- 4 jobs: 2.0s vs Python: 3.6s (1.8x speedup)
-- 1 job: 2.2s vs Python: 3.6s (1.6x speedup)
+- 4 jobs: 0.64s vs Python: 3.73s (**5.9x speedup**)
+- 1 job: 1.76s vs Python: 3.73s (2.1x speedup)
 
 **Split Operations**:
 
-- 4 jobs: 5.3s vs Python: 7.0s (1.3x speedup)
-- 1 job: 4.7s vs Python: 7.0s (1.5x speedup)
+- 4 jobs: 1.33s vs Python: 7.15s (**5.4x speedup**)
+- 1 job: 3.34s vs Python: 7.15s (2.1x speedup)
 
 Note: Performance varies by operation type and dataset characteristics. Threading overhead may impact performance on small datasets.
 
