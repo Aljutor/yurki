@@ -1,27 +1,21 @@
-use mimalloc::MiMalloc;
 use pyo3::{ffi, prelude::*};
-use std::alloc::{GlobalAlloc, Layout};
-use std::{mem, ptr};
+use std::{mem, ptr, alloc};
 
-// Import the unified debug system
 use crate::debug_println;
-// Memory allocation
 
-/// String allocator instance
-static STRING_ALLOCATOR: MiMalloc = MiMalloc;
 
 /// Allocate bytes with usize alignment.
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
-    let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
-    GlobalAlloc::alloc(&STRING_ALLOCATOR, layout)
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    alloc::alloc(layout)
 }
 
 /// Free block with original size for layout consistency.
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
-    let layout = Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
-    GlobalAlloc::dealloc(&STRING_ALLOCATOR, ptr as *mut u8, layout)
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    alloc::dealloc(ptr as *mut u8, layout)
 }
 
 // String type definition

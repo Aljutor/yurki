@@ -1,46 +1,30 @@
 //! yurki::object::list  —  immutable list with custom allocator
 #[allow(static_mut_refs)]
 
-use mimalloc::MiMalloc;
 use pyo3::{ffi, prelude::*};
 use std::{
-    alloc::{GlobalAlloc, Layout},
+    alloc,
     mem,
     os::raw::c_int,
     ptr,
 };
 
-//-------------------------------------------
-// Debug helper (same one you already have)
 use crate::debug_println;
-//-------------------------------------------
 
-// ───────────────────────────────────────────
-//  Allocation helpers (MiMalloc + GlobalAlloc)
-// ───────────────────────────────────────────
-static LIST_ALLOCATOR: MiMalloc = MiMalloc;
-
-/// Allocate `size` bytes aligned to `usize`.
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
-    let layout =
-        Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
-    GlobalAlloc::alloc(&LIST_ALLOCATOR, layout)
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
+    alloc::alloc(layout)
 }
 
-/// Free a previously-allocated block.
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
-    let layout =
-        Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
-    GlobalAlloc::dealloc(&LIST_ALLOCATOR, ptr as *mut u8, layout)
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("List: invalid layout");
+    alloc::dealloc(ptr as *mut u8, layout)
 }
 
-// ───────────────────────────────────────────
 //  List C-level layout
-// ───────────────────────────────────────────
-/// Exact copy of `PyListObject` so we can treat
-/// it as a true list subclass.
+/// Exact copy of `PyListObject`
 #[repr(C)]
 struct PyList {
     ob_base: ffi::PyVarObject, // ob_refcnt / ob_type / ob_size
@@ -191,7 +175,7 @@ unsafe extern "C" fn list_inplace_repeat(
 /// Block dangerous list methods that would resize the list
 unsafe extern "C" fn immutable_append(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -202,7 +186,7 @@ unsafe extern "C" fn immutable_append(
 
 unsafe extern "C" fn immutable_extend(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -213,7 +197,7 @@ unsafe extern "C" fn immutable_extend(
 
 unsafe extern "C" fn immutable_insert(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -224,7 +208,7 @@ unsafe extern "C" fn immutable_insert(
 
 unsafe extern "C" fn immutable_remove(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -235,7 +219,7 @@ unsafe extern "C" fn immutable_remove(
 
 unsafe extern "C" fn immutable_pop(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -246,7 +230,7 @@ unsafe extern "C" fn immutable_pop(
 
 unsafe extern "C" fn immutable_clear(
     _self: *mut ffi::PyObject,
-    args: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
 ) -> *mut ffi::PyObject {
     ffi::PyErr_SetString(
         ffi::PyExc_TypeError,
@@ -263,7 +247,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_append,
         },
         ml_flags: ffi::METH_O,
-        ml_doc: b"append(object) -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"append(object) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"extend\0".as_ptr() as *const _,
@@ -271,7 +255,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_extend,
         },
         ml_flags: ffi::METH_O,
-        ml_doc: b"extend(iterable) -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"extend(iterable) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"insert\0".as_ptr() as *const _,
@@ -279,7 +263,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_insert,
         },
         ml_flags: ffi::METH_VARARGS,
-        ml_doc: b"insert(index, object) -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"insert(index, object) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"remove\0".as_ptr() as *const _,
@@ -287,7 +271,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_remove,
         },
         ml_flags: ffi::METH_O,
-        ml_doc: b"remove(value) -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"remove(value) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"pop\0".as_ptr() as *const _,
@@ -295,7 +279,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_pop,
         },
         ml_flags: ffi::METH_VARARGS,
-        ml_doc: b"pop([index]) -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"pop([index]) -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: b"clear\0".as_ptr() as *const _,
@@ -303,7 +287,7 @@ const IMMUTABLE_LIST_METHODS: [ffi::PyMethodDef; 7] = [
             PyCFunction: immutable_clear,
         },
         ml_flags: ffi::METH_NOARGS,
-        ml_doc: b"clear() -- Blocked: list is immutable\0".as_ptr() as *const _,
+        ml_doc: b"clear() -- Unsupported: yurki.List is immutable\0".as_ptr() as *const _,
     },
     ffi::PyMethodDef {
         ml_name: ptr::null(),
@@ -391,8 +375,8 @@ pub unsafe fn init_list_type(m: *mut ffi::PyObject) -> PyResult<()> {
 /// * Caller must **eventually** hold the GIL before handing the
 ///   resulting object to Python code.
 /// * Every element in `items` must be a valid (live) `PyObject*`.
-pub unsafe fn create_fast_list(items: &[*mut ffi::PyObject]) -> *mut ffi::PyObject {
-    debug_println!("create_fast_list ▶ len={}", items.len());
+pub unsafe fn create_list(items: &[*mut ffi::PyObject]) -> *mut ffi::PyObject {
+    debug_println!("create_list ▶ len={}", items.len());
 
     // Allocate List object
     let obj = list_alloc(LIST_TYPE, items.len() as ffi::Py_ssize_t);
@@ -412,16 +396,16 @@ pub unsafe fn create_fast_list(items: &[*mut ffi::PyObject]) -> *mut ffi::PyObje
         ptr::copy_nonoverlapping(items.as_ptr(), (*fl).ob_item, items.len());
     }
 
-    debug_println!("create_fast_list ◀ obj={:p}", obj);
+    debug_println!("create_list ◀ obj={:p}", obj);
     obj
 }
 
-/// Create empty List with pre-allocated space (like PyList_New)
-pub unsafe fn create_fast_list_empty(size: isize) -> *mut ffi::PyObject {
-    debug_println!("create_fast_list_empty ▶ size={}", size);
+// Create empty list with pre-allocated space (like PyList_New)
+pub unsafe fn create_list_empty(size: isize) -> *mut ffi::PyObject {
+    debug_println!("create_list_empty ▶ size={}", size);
 
     if size <= 0 {
-        return create_fast_list(&[]); // Empty list
+        return create_list(&[]); // Empty list
     }
 
     let obj = list_alloc(LIST_TYPE, size);
@@ -433,19 +417,19 @@ pub unsafe fn create_fast_list_empty(size: isize) -> *mut ffi::PyObject {
     obj
 }
 
-/// Set item at index with ownership transfer (no INCREF)
-pub unsafe fn fast_list_set_item_transfer(
+// Set item at index with ownership transfer (no INCREF)
+pub unsafe fn list_set_item_transfer(
     list: *mut ffi::PyObject,
     index: isize,
     item: *mut ffi::PyObject,
 ) {
     debug_println!(
-        "fast_list_set_item_transfer ▶ list={:p} index={} item={:p}",
+        "list_set_item_transfer ▶ list={:p} index={} item={:p}",
         list,
         index,
         item
     );
     let fl = list as *mut PyList;
     *(*fl).ob_item.add(index as usize) = item;
-    debug_println!("fast_list_set_item_transfer ◀");
+    debug_println!("list_set_item_transfer ◀");
 }

@@ -5,7 +5,7 @@ use pyo3::types::PyList;
 
 // Import the unified debug system
 use crate::debug_println;
-use crate::object::{create_fast_list_empty, fast_list_set_item_transfer, make_string_fast};
+use crate::object::{create_list_empty, list_set_item_transfer, make_string_fast};
 
 // hack object to pass raw pointer for PyObject
 #[derive(Clone, Debug)]
@@ -25,7 +25,7 @@ unsafe impl Send for WorkerResult {}
 // Helper function to safely set list items with PyObjectPtr
 #[inline(always)]
 unsafe fn set_list_item(list_ptr: &PyObjectPtr, index: usize, item_ptr: PyObjectPtr) {
-    fast_list_set_item_transfer(list_ptr.0, index as isize, item_ptr.0);
+    list_set_item_transfer(list_ptr.0, index as isize, item_ptr.0);
 }
 
 // Bump allocator manager to prevent code duplication
@@ -33,6 +33,8 @@ pub struct BumpAllocatorManager {
     pub name: String,
     pub bump: bumpalo::Bump,
 }
+
+const MANAGEMENT_BATCH_SIZE: usize = 100;
 
 impl BumpAllocatorManager {
     // Memory management constants
@@ -124,7 +126,7 @@ where
         input_list_ptr.clone()
     } else {
         unsafe {
-            let result_list = create_fast_list_empty(list_len as isize);
+            let result_list = create_list_empty(list_len as isize);
             assert!(!result_list.is_null());
             PyObjectPtr(result_list)
         }
@@ -173,7 +175,10 @@ where
                 } else {
                     unsafe {set_list_item(&target_list_ptr, i, py_obj)};
                 }
-                bump_manager.manage_memory();
+
+                if (i - range_start) % MANAGEMENT_BATCH_SIZE == 0 {
+                    bump_manager.manage_memory();
+                }
             }
 
             debug_println!(
@@ -237,13 +242,16 @@ where
             unsafe {
                 set_list_item(&input_list_ptr, i, py_obj);
             }
-            bump_manager.manage_memory();
+
+            if i % MANAGEMENT_BATCH_SIZE == 0 {
+                bump_manager.manage_memory();
+            }
         }
         Ok(list.clone().into())
     } else {
         unsafe {
             // Create new list with exact size
-            let result_list = create_fast_list_empty(list_len as isize);
+            let result_list = create_list_empty(list_len as isize);
             assert!(!result_list.is_null());
             let result_list_ptr = PyObjectPtr(result_list);
 
@@ -251,7 +259,10 @@ where
                 let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
                 let py_obj = func(bump_string);
                 set_list_item(&result_list_ptr, i, py_obj);
-                bump_manager.manage_memory();
+                
+                if i % MANAGEMENT_BATCH_SIZE == 0 {
+                    bump_manager.manage_memory();
+                }
             }
 
             Ok(Py::from_owned_ptr(py, result_list))

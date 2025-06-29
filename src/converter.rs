@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::core::PyObjectPtr;
-use crate::object::{create_fast_list_empty, fast_list_set_item_transfer};
+use crate::object::{create_list_empty, list_set_item_transfer};
 use crate::object::create_fast_string;
 use parking_lot::Mutex;
 use pyo3::ffi as pyo3_ffi;
@@ -117,7 +117,7 @@ impl ToPyObject for Vec<Cow<'_, str>> {
         let len = self.len();
 
         // Pre-allocate FastList with exact size (thread-safe)
-        let list = create_fast_list_empty(len as isize);
+        let list = create_list_empty(len as isize);
         if list.is_null() {
             return PyObjectPtr(std::ptr::null_mut());
         }
@@ -125,7 +125,7 @@ impl ToPyObject for Vec<Cow<'_, str>> {
         // Convert each Cow<str> and set (all thread-safe operations)
         for (index, cow_str) in self.into_iter().enumerate() {
             let py_str = cow_str.to_py_object(); // Thread-safe
-            fast_list_set_item_transfer(list, index as isize, py_str.0);
+            list_set_item_transfer(list, index as isize, py_str.0);
         }
 
         PyObjectPtr(list)
