@@ -1,39 +1,44 @@
 use regex::Regex;
+use std::borrow::Cow;
 
-pub fn find_in_string(string: &str, pattern: &Regex) -> String {
-    let mat = pattern.find(string);
-    mat.map(|x| x.as_str()).unwrap_or("").to_string()
+pub fn find_in_string<'a>(string: &'a str, _pattern: &Regex) -> Cow<'a, str> {
+    _pattern
+        .find(string)
+        .map(|m| Cow::Borrowed(m.as_str()))
+        .unwrap_or(Cow::Borrowed(""))
 }
 
 pub fn is_match_in_string(string: &str, pattern: &Regex) -> bool {
     pattern.is_match(string)
 }
 
-pub fn capture_regex_in_string(string: &str, pattern: &Regex) -> Vec<String> {
-    pattern
+pub fn capture_regex_in_string<'a>(string: &'a str, _pattern: &Regex) -> Vec<Cow<'a, str>> {
+    _pattern
         .captures(string)
         .map(|caps| {
             caps.iter()
-                .map(|m| m.map(|m| m.as_str()).unwrap_or(""))
-                .map(|s| s.to_string())
+                .map(|m| {
+                    m.map(|m| Cow::Borrowed(m.as_str()))
+                        .unwrap_or(Cow::Borrowed(""))
+                })
                 .collect()
         })
         .unwrap_or_else(Vec::new)
 }
 
-pub fn split_by_regexp_string(string: &str, pattern: &Regex) -> Vec<String> {
-    pattern.split(string).map(|s| s.to_string()).collect()
+pub fn split_by_regexp_string<'a>(string: &'a str, _pattern: &Regex) -> Vec<Cow<'a, str>> {
+    _pattern.split(string).map(Cow::Borrowed).collect()
 }
 
-pub fn replace_regexp_in_string(
-    string: &str,
-    pattern: &Regex,
+pub fn replace_regexp_in_string<'a>(
+    string: &'a str,
+    _pattern: &Regex,
     replacement: &str,
     count: usize,
-) -> String {
+) -> Cow<'a, str> {
     if count == 0 {
-        pattern.replace_all(string, replacement).to_string()
+        _pattern.replace_all(string, replacement)
     } else {
-        pattern.replacen(string, count, replacement).to_string()
+        _pattern.replacen(string, count, replacement)
     }
 }

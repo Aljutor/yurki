@@ -30,7 +30,7 @@ def generate_no_match_data(size):
 
 class TestIsMatch:
     @pytest.mark.parametrize("jobs", JOBS)
-    @pytest.mark.parametrize("inplace", [True, False])
+    @pytest.mark.parametrize("inplace", [False, True])
     def test_is_match(self, jobs, inplace):
         data, expected = generate_test_data(10)
         result = yurki.regexp.is_match(data=data, pattern=PATTERN, jobs=jobs, inplace=inplace)

@@ -27,7 +27,7 @@ def generate_test_data(size):
 
 class TestReplace:
     @pytest.mark.parametrize("jobs", JOBS)
-    @pytest.mark.parametrize("inplace", [True, False])
+    @pytest.mark.parametrize("inplace", [False, True])
     def test_replace_default(self, jobs, inplace):
         data, expected = generate_test_data(10)
         result = yurki.regexp.replace(data=data, pattern=PATTERN, replacement=REPLACEMENT, jobs=jobs, inplace=inplace)

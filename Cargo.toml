@@ -6,7 +6,7 @@ edition = "2024"
 
 [lib]
 name = "yurki"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rayon = "1.10"
@@ -17,13 +17,24 @@ itertools = "0.14"
 bumpalo = { version = "3.14", features = ["collections"] }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
 pyo3-ffi = "0.25.1"
+mimalloc = { version = "0.1.47", features = ["secure"] }
+parking_lot = "0.12"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [build-dependencies]
 pyo3-build-config = "0.25.1"
 
+[features]
+default = []
+debug-yurki-internal = []
+disable-fast-string = []
+
 [profile.release]
-opt-level = 3
+opt-level = 3 
 lto = "fat"
+codegen-units = 1
 
 [profile.release-with-debug]
 inherits = "release"
