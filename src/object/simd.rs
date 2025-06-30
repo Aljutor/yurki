@@ -72,14 +72,330 @@ type U32s = Simd<u32, 4>;
 const LANES_U32: usize = 4;
 
 /* ===================================================================== */
+/*                      Performance Thresholds                           */
+/* ===================================================================== */
+
+// Optimal thresholds based on benchmarks - below these use scalar, above use SIMD
+const SIMD_THRESHOLD_BYTES: usize = 32;  // UTF-8 byte threshold
+const SIMD_THRESHOLD_UCS1: usize = 32;   // UCS1 char threshold  
+const SIMD_THRESHOLD_UCS2: usize = 16;   // UCS2 char threshold
+const SIMD_THRESHOLD_UCS4: usize = 8;    // UCS4 char threshold
+
+/* ===================================================================== */
+/*                      Scalar Implementations                           */
+/* ===================================================================== */
+
+/// Scalar Latin-1 → UTF-8 conversion (optimized for short strings)
+#[inline]
+fn ucs1_to_utf8_scalar_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a str {
+    // Fast path for pure ASCII
+    if input.iter().all(|&b| b < 0x80) {
+        return unsafe { core::str::from_utf8_unchecked(input) };
+    }
+    
+    // Count non-ASCII bytes for exact allocation
+    let extra = input.iter().filter(|&&b| b >= 0x80).count();
+    let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() + extra, bump);
+    
+    for &b in input {
+        if b < 0x80 {
+            out.push(b);
+        } else {
+            out.push(0xC0 | (b >> 6));
+            out.push(0x80 | (b & 0x3F));
+        }
+    }
+    
+    let slice = out.into_bump_slice();
+    unsafe { core::str::from_utf8_unchecked(slice) }
+}
+
+#[inline]
+fn ucs1_to_utf8_scalar(input: &[u8]) -> Cow<str> {
+    // Fast path for pure ASCII
+    if input.iter().all(|&b| b < 0x80) {
+        return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
+    }
+    
+    // Count non-ASCII bytes for exact allocation
+    let extra = input.iter().filter(|&&b| b >= 0x80).count();
+    let mut out = Vec::with_capacity(input.len() + extra);
+    
+    for &b in input {
+        if b < 0x80 {
+            out.push(b);
+        } else {
+            out.push(0xC0 | (b >> 6));
+            out.push(0x80 | (b & 0x3F));
+        }
+    }
+    
+    Cow::Owned(unsafe { String::from_utf8_unchecked(out) })
+}
+
+/// Scalar UTF-16 → UTF-8 conversion (optimized for short strings)
+#[inline]
+fn ucs2_to_utf8_scalar_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str {
+    let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 3, bump);
+    
+    let mut i = 0;
+    while i < input.len() {
+        let w = input[i];
+        match w {
+            0x0000..=0x007F => out.push(w as u8),
+            0x0080..=0x07FF => {
+                out.push((0xC0 | (w >> 6)) as u8);
+                out.push((0x80 | (w & 0x3F)) as u8);
+            }
+            0xD800..=0xDBFF => {
+                // High surrogate: assume valid pair
+                if i + 1 < input.len() {
+                    let lo = input[i + 1];
+                    let cp = 0x10000 + (((w as u32 & 0x3FF) << 10) | (lo as u32 & 0x3FF));
+                    push_utf8_4_bump(cp, &mut out);
+                    i += 1; // skip low surrogate
+                }
+            }
+            0xDC00..=0xDFFF => {
+                // Isolated low surrogate - skip
+            }
+            _ => {
+                out.push((0xE0 | (w >> 12)) as u8);
+                out.push((0x80 | ((w >> 6) & 0x3F)) as u8);
+                out.push((0x80 | (w & 0x3F)) as u8);
+            }
+        }
+        i += 1;
+    }
+    
+    let slice = out.into_bump_slice();
+    unsafe { core::str::from_utf8_unchecked(slice) }
+}
+
+#[inline]
+fn ucs2_to_utf8_scalar(input: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() * 3);
+    
+    let mut i = 0;
+    while i < input.len() {
+        let w = input[i];
+        match w {
+            0x0000..=0x007F => out.push(w as u8),
+            0x0080..=0x07FF => {
+                out.push((0xC0 | (w >> 6)) as u8);
+                out.push((0x80 | (w & 0x3F)) as u8);
+            }
+            0xD800..=0xDBFF => {
+                // High surrogate: assume valid pair
+                if i + 1 < input.len() {
+                    let lo = input[i + 1];
+                    let cp = 0x10000 + (((w as u32 & 0x3FF) << 10) | (lo as u32 & 0x3FF));
+                    push_utf8_4(cp, &mut out);
+                    i += 1; // skip low surrogate
+                }
+            }
+            0xDC00..=0xDFFF => {
+                // Isolated low surrogate - skip
+            }
+            _ => {
+                out.push((0xE0 | (w >> 12)) as u8);
+                out.push((0x80 | ((w >> 6) & 0x3F)) as u8);
+                out.push((0x80 | (w & 0x3F)) as u8);
+            }
+        }
+        i += 1;
+    }
+    
+    out
+}
+
+/// Scalar UTF-32 → UTF-8 conversion (optimized for short strings)
+#[inline]
+fn ucs4_to_utf8_scalar_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str {
+    let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 4, bump);
+    
+    for &cp in input {
+        push_utf32_scalar_bump(cp, &mut out);
+    }
+    
+    let slice = out.into_bump_slice();
+    unsafe { core::str::from_utf8_unchecked(slice) }
+}
+
+#[inline]
+fn ucs4_to_utf8_scalar(input: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() * 4);
+    
+    for &cp in input {
+        push_utf32_scalar(cp, &mut out);
+    }
+    
+    out
+}
+
+/// Scalar UTF-8 → UCS1 conversion (optimized for short strings)
+#[inline]
+fn utf8_to_ucs1_scalar(input: &[u8], output: &mut [u8]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+    
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Decode UTF-8 to get codepoint (simple version)
+            match byte {
+                0xC0..=0xDF => {
+                    // 2-byte sequence
+                    if i + 1 < input.len() {
+                        let b1 = input[i + 1];
+                        let cp = ((byte as u32 & 0x1F) << 6) | (b1 as u32 & 0x3F);
+                        if cp <= 0xFF {
+                            output[out_pos] = cp as u8;
+                            out_pos += 1;
+                        }
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                }
+                _ => {
+                    // Skip other multi-byte sequences for Latin-1
+                    while i < input.len() && (input[i] & 0xC0) != 0xC0 && input[i] >= 0x80 {
+                        i += 1;
+                    }
+                    if i < input.len() && input[i] >= 0x80 {
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+    
+    out_pos
+}
+
+/// Scalar UTF-8 → UCS2 conversion (optimized for short strings)
+#[inline]
+fn utf8_to_ucs2_scalar(input: &[u8], output: &mut [u16]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+    
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte as u16;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Simple UTF-8 decoding
+            if let Ok(s) = core::str::from_utf8(&input[i..]) {
+                if let Some(ch) = s.chars().next() {
+                    let cp = ch as u32;
+                    if cp <= 0xFFFF && (cp < 0xD800 || cp > 0xDFFF) {
+                        output[out_pos] = cp as u16;
+                        out_pos += 1;
+                    } else if cp > 0xFFFF && out_pos + 1 < output.len() {
+                        // Encode as surrogate pair
+                        let cp = cp - 0x10000;
+                        output[out_pos] = 0xD800 | ((cp >> 10) as u16);
+                        output[out_pos + 1] = 0xDC00 | ((cp & 0x3FF) as u16);
+                        out_pos += 2;
+                    }
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    
+    out_pos
+}
+
+/// Scalar UTF-8 → UCS4 conversion (optimized for short strings)
+#[inline]
+fn utf8_to_ucs4_scalar(input: &[u8], output: &mut [u32]) -> usize {
+    let mut out_pos = 0;
+    let mut i = 0;
+    
+    while i < input.len() && out_pos < output.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            output[out_pos] = byte as u32;
+            out_pos += 1;
+            i += 1;
+        } else {
+            // Simple UTF-8 decoding
+            if let Ok(s) = core::str::from_utf8(&input[i..]) {
+                if let Some(ch) = s.chars().next() {
+                    output[out_pos] = ch as u32;
+                    out_pos += 1;
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    
+    out_pos
+}
+
+/// Scalar UTF-8 analysis (optimized for short strings)
+#[inline]
+fn analyze_utf8_scalar(input: &[u8]) -> (usize, u32) {
+    let mut char_count = 0;
+    let mut max_codepoint = 0u32;
+    let mut i = 0;
+    
+    while i < input.len() {
+        let byte = input[i];
+        if byte < 0x80 {
+            char_count += 1;
+            max_codepoint = max_codepoint.max(byte as u32);
+            i += 1;
+        } else {
+            // Decode UTF-8 character
+            if let Ok(s) = core::str::from_utf8(&input[i..]) {
+                if let Some(ch) = s.chars().next() {
+                    char_count += 1;
+                    max_codepoint = max_codepoint.max(ch as u32);
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    
+    (char_count, max_codepoint)
+}
+
+/* ===================================================================== */
 /*               Py_UCS1 (Latin-1) → UTF-8                               */
 /* ===================================================================== */
 
 /// Convert a Latin-1 slice to UTF-8 using bump allocator.
 /// * Pure ASCII → borrowed `&str` (zero-alloc)
 /// * Mixed input → bump-allocated `&str`
+/// Uses scalar for short strings, SIMD for longer ones.
 #[inline]
 pub fn ucs1_to_utf8_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a str {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS1 {
+        return ucs1_to_utf8_scalar_bump(input, bump);
+    }
+
     /* 1. All-ASCII detection (vector + scalar tail) */
     if input
         .chunks_exact(LANES_U8)
@@ -134,8 +450,14 @@ pub fn ucs1_to_utf8_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a st
 /// Convert a Latin-1 slice to UTF-8.
 /// * Pure ASCII → borrowed `&str` (zero-alloc)
 /// * Mixed input → owned `String` inside `Cow::Owned`
+/// Uses scalar for short strings, SIMD for longer ones.
 #[inline]
 pub fn ucs1_to_utf8<'a>(input: &'a [u8]) -> Cow<'a, str> {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS1 {
+        return ucs1_to_utf8_scalar(input);
+    }
+
     /* 1. All-ASCII detection (vector + scalar tail) */
     if input
         .chunks_exact(LANES_U8)
@@ -240,6 +562,11 @@ fn expand_latin1_block(block: &[u8], out: &mut Vec<u8>) {
 
 #[inline]
 pub fn ucs2_to_utf8_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS2 {
+        return ucs2_to_utf8_scalar_bump(input, bump);
+    }
+
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 3, bump);
     let mut i = 0;
     while i + LANES_U16 <= input.len() {
@@ -261,6 +588,11 @@ pub fn ucs2_to_utf8_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str 
 
 #[inline]
 pub fn ucs2_to_utf8(input: &[u16]) -> Vec<u8> {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS2 {
+        return ucs2_to_utf8_scalar(input);
+    }
+
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3);
     let mut i = 0;
     while i + LANES_U16 <= input.len() {
@@ -404,6 +736,11 @@ fn push_utf32_scalar(cp: u32, out: &mut Vec<u8>) {
 
 #[inline]
 pub fn ucs4_to_utf8_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS4 {
+        return ucs4_to_utf8_scalar_bump(input, bump);
+    }
+
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 4, bump);
     let mut i = 0;
     while i + LANES_U32 <= input.len() {
@@ -429,6 +766,11 @@ pub fn ucs4_to_utf8_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str 
 
 #[inline]
 pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_UCS4 {
+        return ucs4_to_utf8_scalar(input);
+    }
+
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 4);
     let mut i = 0;
     while i + LANES_U32 <= input.len() {
@@ -455,7 +797,13 @@ pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
 }
 
 /// SIMD UTF-8 analysis: count characters + find max codepoint in one pass
+/// Uses scalar for short strings, SIMD for longer ones.
 pub fn analyze_utf8_simd(input: &[u8]) -> (usize, u32) {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_BYTES {
+        return analyze_utf8_scalar(input);
+    }
+
     let mut char_count = 0usize;
     let mut max_codepoint = 0u32;
     let mut i = 0;
@@ -528,7 +876,13 @@ pub fn analyze_utf8_simd(input: &[u8]) -> (usize, u32) {
 }
 
 /// UTF-8 → UCS-1 with SIMD acceleration (for ASCII/Latin-1 strings)
+/// Uses scalar for short strings, SIMD for longer ones.
 pub fn utf8_to_ucs1_simd(input: &[u8], output: &mut [u8]) -> usize {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_BYTES {
+        return utf8_to_ucs1_scalar(input, output);
+    }
+
     let mut out_pos = 0;
     let mut i = 0;
 
@@ -576,7 +930,13 @@ pub fn utf8_to_ucs1_simd(input: &[u8], output: &mut [u8]) -> usize {
 }
 
 /// UTF-8 → UCS-2 with SIMD acceleration
+/// Uses scalar for short strings, SIMD for longer ones.
 pub fn utf8_to_ucs2_simd(input: &[u8], output: &mut [u16]) -> usize {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_BYTES {
+        return utf8_to_ucs2_scalar(input, output);
+    }
+
     let mut out_pos = 0;
     let mut i = 0;
 
@@ -638,7 +998,13 @@ pub fn utf8_to_ucs2_simd(input: &[u8], output: &mut [u16]) -> usize {
 }
 
 /// UTF-8 → UCS-4 with SIMD acceleration
+/// Uses scalar for short strings, SIMD for longer ones.
 pub fn utf8_to_ucs4_simd(input: &[u8], output: &mut [u32]) -> usize {
+    // Use scalar for short strings to avoid SIMD overhead
+    if input.len() < SIMD_THRESHOLD_BYTES {
+        return utf8_to_ucs4_scalar(input, output);
+    }
+
     let mut out_pos = 0;
     let mut i = 0;
 
