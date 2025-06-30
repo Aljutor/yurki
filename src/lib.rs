@@ -29,6 +29,7 @@ pub(crate) use debug_println;
 pub mod converter;
 pub mod core;
 pub mod object;
+pub mod simd;
 pub mod text;
 
 #[pymodule(gil_used = false)]

@@ -1,7 +1,7 @@
 use pyo3::{ffi, prelude::*};
 use std::{alloc, mem, ptr};
 
-use super::simd;
+use crate::simd;
 use crate::debug_println;
 
 /// Allocate bytes with usize alignment.
