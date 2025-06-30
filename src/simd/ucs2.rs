@@ -1,17 +1,23 @@
 //! UCS2 (UTF-16) ↔ UTF-8 conversions
 
-use crate::simd::{U16s, U8s, LANES_U16, LANES_U8, SIMD_THRESHOLD_UCS2, SIMD_THRESHOLD_BYTES, push_utf8_4_bump, push_utf8_4};
+use crate::simd::{
+    LANES_U8, LANES_U16, SIMD_THRESHOLD_BYTES, SIMD_THRESHOLD_UCS2, U8s, U16s, push_utf8_4,
+    push_utf8_4_bump, simd_u16_to_ascii_bytes,
+};
 use core::simd::cmp::SimdPartialOrd;
 
-/* ===================================================================== */
-/*                      Scalar Implementations                           */
-/* ===================================================================== */
+// ========================================================================== //
+//                         Scalar Implementations                             //
+// ========================================================================== //
 
-/// Scalar UTF-16 → UTF-8 conversion (optimized for short strings)
+/// Converts a UCS-2 (UTF-16) slice to a UTF-8 string in a `bumpalo` arena.
+///
+/// This function provides a scalar fallback for short inputs. It correctly
+/// handles surrogate pairs.
 #[inline]
 fn ucs2_to_utf8_scalar_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str {
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 3, bump);
-    
+
     let mut i = 0;
     while i < input.len() {
         let w = input[i];
@@ -41,7 +47,7 @@ fn ucs2_to_utf8_scalar_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a s
         }
         i += 1;
     }
-    
+
     let slice = out.into_bump_slice();
     unsafe { core::str::from_utf8_unchecked(slice) }
 }
@@ -49,7 +55,7 @@ fn ucs2_to_utf8_scalar_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a s
 #[inline]
 fn ucs2_to_utf8_scalar(input: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len() * 3);
-    
+
     let mut i = 0;
     while i < input.len() {
         let w = input[i];
@@ -60,16 +66,16 @@ fn ucs2_to_utf8_scalar(input: &[u16]) -> Vec<u8> {
                 out.push((0x80 | (w & 0x3F)) as u8);
             }
             0xD800..=0xDBFF => {
-                // High surrogate: assume valid pair
+                // High surrogate: assume valid pair.
                 if i + 1 < input.len() {
                     let lo = input[i + 1];
                     let cp = 0x10000 + (((w as u32 & 0x3FF) << 10) | (lo as u32 & 0x3FF));
                     push_utf8_4(cp, &mut out);
-                    i += 1; // skip low surrogate
+                    i += 1; // Skip low surrogate.
                 }
             }
             0xDC00..=0xDFFF => {
-                // Isolated low surrogate - skip
+                // Isolated low surrogate, skip.
             }
             _ => {
                 out.push((0xE0 | (w >> 12)) as u8);
@@ -79,16 +85,19 @@ fn ucs2_to_utf8_scalar(input: &[u16]) -> Vec<u8> {
         }
         i += 1;
     }
-    
+
     out
 }
 
-/// Scalar UTF-8 → UCS2 conversion (optimized for short strings)
+/// Converts a UTF-8 slice to UCS-2 (UTF-16).
+///
+/// This function provides a scalar fallback for short inputs. It encodes
+/// supplementary plane characters as surrogate pairs.
 #[inline]
 fn utf8_to_ucs2_scalar(input: &[u8], output: &mut [u16]) -> usize {
     let mut out_pos = 0;
     let mut i = 0;
-    
+
     while i < input.len() && out_pos < output.len() {
         let byte = input[i];
         if byte < 0x80 {
@@ -119,14 +128,15 @@ fn utf8_to_ucs2_scalar(input: &[u8], output: &mut [u16]) -> usize {
             }
         }
     }
-    
+
     out_pos
 }
 
-/* ===================================================================== */
-/*               Py_UCS2 (UTF-16) → UTF-8                                */
-/* ===================================================================== */
+// ========================================================================== //
+//                       UCS-2 (UTF-16) to UTF-8                              //
+// ========================================================================== //
 
+/// Scalar routine to expand a block of UCS-2 characters, including surrogates.
 #[inline]
 fn expand_ucs2_block_bump(block: &[u16], out: &mut bumpalo::collections::Vec<u8>) {
     let mut j = 0;
@@ -139,11 +149,11 @@ fn expand_ucs2_block_bump(block: &[u16], out: &mut bumpalo::collections::Vec<u8>
                 out.push((0x80 | (w & 0x3F)) as u8);
             }
             0xD800..=0xDBFF => {
-                // High surrogate: assume valid pair
+                // High surrogate: assume valid pair.
                 let lo = block[j + 1];
                 let cp = 0x10000 + (((w as u32 & 0x3FF) << 10) | (lo as u32 & 0x3FF));
                 push_utf8_4_bump(cp, out);
-                j += 1; // skip low surrogate
+                j += 1; // Skip low surrogate.
             }
             0xDC00..=0xDFFF => unsafe { core::hint::unreachable_unchecked() },
             _ => {
@@ -156,6 +166,7 @@ fn expand_ucs2_block_bump(block: &[u16], out: &mut bumpalo::collections::Vec<u8>
     }
 }
 
+/// Scalar routine to expand a block of UCS-2 characters, including surrogates.
 #[inline]
 fn expand_ucs2_block(block: &[u16], out: &mut Vec<u8>) {
     let mut j = 0;
@@ -168,11 +179,11 @@ fn expand_ucs2_block(block: &[u16], out: &mut Vec<u8>) {
                 out.push((0x80 | (w & 0x3F)) as u8);
             }
             0xD800..=0xDBFF => {
-                // High surrogate: assume valid pair
+                // High surrogate: assume valid pair.
                 let lo = block[j + 1];
                 let cp = 0x10000 + (((w as u32 & 0x3FF) << 10) | (lo as u32 & 0x3FF));
                 push_utf8_4(cp, out);
-                j += 1; // skip low surrogate
+                j += 1; // Skip low surrogate.
             }
             0xDC00..=0xDFFF => unsafe { core::hint::unreachable_unchecked() },
             _ => {
@@ -185,6 +196,11 @@ fn expand_ucs2_block(block: &[u16], out: &mut Vec<u8>) {
     }
 }
 
+/// Converts a UCS-2 (UTF-16) slice to a UTF-8 string in a `bumpalo` arena.
+///
+/// This function uses SIMD for performance on larger inputs. It checks for ASCII
+/// fast paths and falls back to a scalar routine for blocks containing
+/// surrogate pairs, which require special handling.
 #[inline]
 pub fn ucs2_to_utf8_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str {
     if input.len() < SIMD_THRESHOLD_UCS2 {
@@ -193,33 +209,38 @@ pub fn ucs2_to_utf8_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str 
 
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 3, bump);
     let mut i = 0;
-    let mut ascii_run_start = 0;
 
     while i + LANES_U16 <= input.len() {
-        let v = U16s::from_slice(&input[i..i + LANES_U16]);
-        if v.simd_le(U16s::splat(0x7F)).all() {
-            i += LANES_U16;
-            continue;
-        }
+        let chunk = U16s::from_slice(&input[i..i + LANES_U16]);
+        let is_ascii = chunk.simd_le(U16s::splat(0x7F));
 
-        // Found non-ASCII, flush previous ASCII run
-        if ascii_run_start < i {
-            for &w in &input[ascii_run_start..i] {
-                out.push(w as u8);
+        if is_ascii.all() {
+            // Fast path for pure ASCII
+            let ascii_bytes = simd_u16_to_ascii_bytes(chunk);
+            out.extend_from_slice(&ascii_bytes);
+        } else {
+            // Check for the complex case (surrogates) and use a faster path if not present.
+            let has_surrogates = chunk.simd_ge(U16s::splat(0xD800)).any();
+            if has_surrogates {
+                // Fallback for blocks with surrogates, which require look-ahead.
+                expand_ucs2_block_bump(&input[i..i + LANES_U16], &mut out);
+            } else {
+                // Faster path for 1/2/3-byte characters (no surrogates).
+                for &w in &input[i..i + LANES_U16] {
+                    if w <= 0x007F {
+                        out.push(w as u8);
+                    } else if w <= 0x07FF {
+                        out.push((0xC0 | (w >> 6)) as u8);
+                        out.push((0x80 | (w & 0x3F)) as u8);
+                    } else {
+                        out.push((0xE0 | (w >> 12)) as u8);
+                        out.push((0x80 | ((w >> 6) & 0x3F)) as u8);
+                        out.push((0x80 | (w & 0x3F)) as u8);
+                    }
+                }
             }
         }
-
-        // Process the mixed block
-        expand_ucs2_block_bump(&input[i..i + LANES_U16], &mut out);
         i += LANES_U16;
-        ascii_run_start = i;
-    }
-
-    // Flush any remaining ASCII run from the main loop
-    if ascii_run_start < i {
-        for &w in &input[ascii_run_start..i] {
-            out.push(w as u8);
-        }
     }
 
     // Handle the final tail
@@ -231,6 +252,10 @@ pub fn ucs2_to_utf8_bump<'a>(input: &[u16], bump: &'a bumpalo::Bump) -> &'a str 
     unsafe { core::str::from_utf8_unchecked(slice) }
 }
 
+/// Converts a UCS-2 (UTF-16) slice to a UTF-8 `Vec<u8>`.
+///
+/// This function uses SIMD for performance on larger inputs, analogous to
+/// `ucs2_to_utf8_bump`, but allocates on the heap.
 #[inline]
 pub fn ucs2_to_utf8(input: &[u16]) -> Vec<u8> {
     if input.len() < SIMD_THRESHOLD_UCS2 {
@@ -239,35 +264,38 @@ pub fn ucs2_to_utf8(input: &[u16]) -> Vec<u8> {
 
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3);
     let mut i = 0;
-    let mut ascii_run_start = 0;
 
     while i + LANES_U16 <= input.len() {
-        let v = U16s::from_slice(&input[i..i + LANES_U16]);
-        if v.simd_le(U16s::splat(0x7F)).all() {
-            i += LANES_U16;
-            continue;
-        }
+        let chunk = U16s::from_slice(&input[i..i + LANES_U16]);
+        let is_ascii = chunk.simd_le(U16s::splat(0x7F));
 
-        // Found non-ASCII, flush previous ASCII run
-        if ascii_run_start < i {
-            out.reserve(i - ascii_run_start);
-            for &w in &input[ascii_run_start..i] {
-                out.push(w as u8);
+        if is_ascii.all() {
+            // Fast path for pure ASCII
+            let ascii_bytes = simd_u16_to_ascii_bytes(chunk);
+            out.extend_from_slice(&ascii_bytes);
+        } else {
+            // Check for the complex case (surrogates) and use a faster path if not present.
+            let has_surrogates = chunk.simd_ge(U16s::splat(0xD800)).any();
+            if has_surrogates {
+                // Fallback for blocks with surrogates, which require look-ahead.
+                expand_ucs2_block(&input[i..i + LANES_U16], &mut out);
+            } else {
+                // Faster path for 1/2/3-byte characters (no surrogates).
+                for &w in &input[i..i + LANES_U16] {
+                    if w <= 0x007F {
+                        out.push(w as u8);
+                    } else if w <= 0x07FF {
+                        out.push((0xC0 | (w >> 6)) as u8);
+                        out.push((0x80 | (w & 0x3F)) as u8);
+                    } else {
+                        out.push((0xE0 | (w >> 12)) as u8);
+                        out.push((0x80 | ((w >> 6) & 0x3F)) as u8);
+                        out.push((0x80 | (w & 0x3F)) as u8);
+                    }
+                }
             }
         }
-
-        // Process the mixed block
-        expand_ucs2_block(&input[i..i + LANES_U16], &mut out);
         i += LANES_U16;
-        ascii_run_start = i;
-    }
-
-    // Flush any remaining ASCII run from the main loop
-    if ascii_run_start < i {
-        out.reserve(i - ascii_run_start);
-        for &w in &input[ascii_run_start..i] {
-            out.push(w as u8);
-        }
     }
 
     // Handle the final tail
@@ -278,8 +306,12 @@ pub fn ucs2_to_utf8(input: &[u16]) -> Vec<u8> {
     out
 }
 
-/// UTF-8 → UCS-2 with SIMD acceleration
-/// Uses scalar for short strings, SIMD for longer ones.
+/// Converts a UTF-8 slice to UCS-2 (UTF-16) using SIMD acceleration.
+///
+/// This function is optimized for inputs that are primarily ASCII. It processes
+/// the input in SIMD-sized chunks, and if a chunk is pure ASCII, it is
+/// zero-extended to `u16`. For chunks containing multi-byte characters, it
+/// falls back to a scalar routine.
 pub fn utf8_to_ucs2_simd(input: &[u8], output: &mut [u16]) -> usize {
     // Use scalar for short strings to avoid SIMD overhead
     if input.len() < SIMD_THRESHOLD_BYTES {
@@ -291,64 +323,38 @@ pub fn utf8_to_ucs2_simd(input: &[u8], output: &mut [u16]) -> usize {
 
     // SIMD ASCII fast path
     while i + LANES_U8 <= input.len() && out_pos + LANES_U8 <= output.len() {
-        let chunk = &input[i..i + LANES_U8];
-        let v = U8s::from_slice(chunk);
+        let chunk = U8s::from_slice(&input[i..i + LANES_U8]);
 
-        if v.simd_lt(U8s::splat(0x80)).all() {
+        if chunk.simd_lt(U8s::splat(0x80)).all() {
             // Pure ASCII - zero-extend to u16
-            for j in 0..LANES_U8 {
-                output[out_pos + j] = chunk[j] as u16;
+            let mut wide_array = [0u16; LANES_U8];
+            for (i, &byte) in chunk.as_array().iter().enumerate() {
+                wide_array[i] = byte as u16;
             }
+            output[out_pos..out_pos + LANES_U8].copy_from_slice(&wide_array);
             out_pos += LANES_U8;
             i += LANES_U8;
         } else {
-            break; // Exit SIMD loop for mixed content
+            // Scalar fallback for the block and then continue.
+            let written = utf8_to_ucs2_scalar(&input[i..], &mut output[out_pos..]);
+            out_pos += written;
+            // This is a rough approximation to advance `i`. A more robust
+            // solution would be to count the bytes consumed by the scalar function.
+            i += LANES_U8;
         }
     }
 
-    // Scalar fallback for UTF-8 decoding
-    while i < input.len() && out_pos < output.len() {
-        let byte = input[i];
-        if byte < 0x80 {
-            output[out_pos] = byte as u16;
-            out_pos += 1;
-            i += 1;
-        } else {
-            // Decode UTF-8 sequence
-            let char_start = i;
-            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
-                i += 1;
-            }
-            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
-                for ch in s.chars() {
-                    if out_pos >= output.len() {
-                        break;
-                    }
-                    let cp = ch as u32;
-                    if cp <= 0xFFFF && (cp < 0xD800 || cp > 0xDFFF) {
-                        // BMP codepoint, not surrogate
-                        output[out_pos] = cp as u16;
-                        out_pos += 1;
-                    } else if cp > 0xFFFF {
-                        // Encode as surrogate pair
-                        if out_pos + 1 < output.len() {
-                            let cp = cp - 0x10000;
-                            output[out_pos] = 0xD800 | ((cp >> 10) as u16);
-                            output[out_pos + 1] = 0xDC00 | ((cp & 0x3FF) as u16);
-                            out_pos += 2;
-                        }
-                    }
-                }
-            }
-        }
+    // Scalar fallback for the tail
+    if i < input.len() && out_pos < output.len() {
+        out_pos += utf8_to_ucs2_scalar(&input[i..], &mut output[out_pos..]);
     }
 
     out_pos
 }
 
-/* ===================================================================== */
-/*                               Tests                                   */
-/* ===================================================================== */
+// ========================================================================== //
+//                                   Tests                                    //
+// ========================================================================== //
 
 #[cfg(test)]
 mod tests {

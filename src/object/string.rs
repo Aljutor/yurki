@@ -1,8 +1,8 @@
 use pyo3::{ffi, prelude::*};
 use std::{alloc, mem, ptr};
 
-use crate::simd;
 use crate::debug_println;
+use crate::simd;
 
 /// Allocate bytes with usize alignment.
 #[inline(always)]
@@ -183,7 +183,6 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
         ffi::PyErr_NoMemory();
         return std::ptr::null_mut();
     }
-    std::ptr::write_bytes(raw, 0, total_bytes);
     debug_println!("  alloc {:p}, total_bytes={total_bytes}", raw);
 
     // PyObject header

@@ -1,21 +1,26 @@
 //! UCS4 (UTF-32) ↔ UTF-8 conversions
 
-use crate::simd::{U32s, U8s, LANES_U32, LANES_U8, SIMD_THRESHOLD_UCS4, SIMD_THRESHOLD_BYTES, push_utf8_4_bump, push_utf8_4};
+use crate::simd::{
+    LANES_U8, LANES_U32, SIMD_THRESHOLD_BYTES, SIMD_THRESHOLD_UCS4, U8s, U32s, push_utf8_4,
+    push_utf8_4_bump, simd_u32_to_ascii_bytes,
+};
 use core::simd::cmp::SimdPartialOrd;
 
-/* ===================================================================== */
-/*                      Scalar Implementations                           */
-/* ===================================================================== */
+// ========================================================================== //
+//                         Scalar Implementations                             //
+// ========================================================================== //
 
-/// Scalar UTF-32 → UTF-8 conversion (optimized for short strings)
+/// Converts a UCS-4 (UTF-32) slice to a UTF-8 string in a `bumpalo` arena.
+///
+/// This function provides a scalar fallback for short inputs.
 #[inline]
 fn ucs4_to_utf8_scalar_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str {
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 4, bump);
-    
+
     for &cp in input {
         push_utf32_scalar_bump(cp, &mut out);
     }
-    
+
     let slice = out.into_bump_slice();
     unsafe { core::str::from_utf8_unchecked(slice) }
 }
@@ -23,20 +28,22 @@ fn ucs4_to_utf8_scalar_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a s
 #[inline]
 fn ucs4_to_utf8_scalar(input: &[u32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len() * 4);
-    
+
     for &cp in input {
         push_utf32_scalar(cp, &mut out);
     }
-    
+
     out
 }
 
-/// Scalar UTF-8 → UCS4 conversion (optimized for short strings)
+/// Converts a UTF-8 slice to UCS-4 (UTF-32).
+///
+/// This function provides a scalar fallback for short inputs.
 #[inline]
 fn utf8_to_ucs4_scalar(input: &[u8], output: &mut [u32]) -> usize {
     let mut out_pos = 0;
     let mut i = 0;
-    
+
     while i < input.len() && out_pos < output.len() {
         let byte = input[i];
         if byte < 0x80 {
@@ -58,7 +65,7 @@ fn utf8_to_ucs4_scalar(input: &[u8], output: &mut [u32]) -> usize {
             }
         }
     }
-    
+
     out_pos
 }
 
@@ -96,10 +103,15 @@ fn push_utf32_scalar(cp: u32, out: &mut Vec<u8>) {
     }
 }
 
-/* ===================================================================== */
-/*               Py_UCS4 (UTF-32) → UTF-8                                */
-/* ===================================================================== */
+// ========================================================================== //
+//                       UCS-4 (UTF-32) to UTF-8                              //
+// ========================================================================== //
 
+/// Converts a UCS-4 (UTF-32) slice to a UTF-8 string in a `bumpalo` arena.
+///
+/// This function uses SIMD for performance on larger inputs. It includes a
+/// fast path for ASCII and a scalar fallback for blocks containing
+/// supplementary-plane characters.
 #[inline]
 pub fn ucs4_to_utf8_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str {
     if input.len() < SIMD_THRESHOLD_UCS4 {
@@ -108,35 +120,40 @@ pub fn ucs4_to_utf8_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str 
 
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 4, bump);
     let mut i = 0;
-    let mut ascii_run_start = 0;
 
     while i + LANES_U32 <= input.len() {
-        let v = U32s::from_slice(&input[i..i + LANES_U32]);
-        if v.simd_le(U32s::splat(0x7F)).all() {
-            i += LANES_U32;
-            continue;
-        }
+        let chunk = U32s::from_slice(&input[i..i + LANES_U32]);
+        let is_ascii = chunk.simd_le(U32s::splat(0x7F));
 
-        // Found non-ASCII, flush previous ASCII run
-        if ascii_run_start < i {
-            for &cp in &input[ascii_run_start..i] {
-                out.push(cp as u8);
+        if is_ascii.all() {
+            // Fast path for pure ASCII
+            let ascii_bytes = simd_u32_to_ascii_bytes(chunk);
+            out.extend_from_slice(&ascii_bytes);
+        } else {
+            // Check for the complex case (4-byte UTF-8) and use a faster path if not present.
+            let has_supplementary = chunk.simd_gt(U32s::splat(0xFFFF)).any();
+            if has_supplementary {
+                // Fallback for blocks with supplementary-plane characters.
+                for &cp in &input[i..i + LANES_U32] {
+                    push_utf32_scalar_bump(cp, &mut out);
+                }
+            } else {
+                // Faster path for 1/2/3-byte characters.
+                for &cp in &input[i..i + LANES_U32] {
+                    if cp <= 0x007F {
+                        out.push(cp as u8);
+                    } else if cp <= 0x07FF {
+                        out.push((0xC0 | (cp >> 6)) as u8);
+                        out.push((0x80 | (cp & 0x3F)) as u8);
+                    } else {
+                        out.push((0xE0 | (cp >> 12)) as u8);
+                        out.push((0x80 | ((cp >> 6) & 0x3F)) as u8);
+                        out.push((0x80 | (cp & 0x3F)) as u8);
+                    }
+                }
             }
         }
-
-        // Process the mixed block
-        for &cp in &input[i..i + LANES_U32] {
-            push_utf32_scalar_bump(cp, &mut out);
-        }
         i += LANES_U32;
-        ascii_run_start = i;
-    }
-
-    // Flush any remaining ASCII run from the main loop
-    if ascii_run_start < i {
-        for &cp in &input[ascii_run_start..i] {
-            out.push(cp as u8);
-        }
     }
 
     // Handle the final tail
@@ -150,6 +167,10 @@ pub fn ucs4_to_utf8_bump<'a>(input: &[u32], bump: &'a bumpalo::Bump) -> &'a str 
     unsafe { core::str::from_utf8_unchecked(slice) }
 }
 
+/// Converts a UCS-4 (UTF-32) slice to a UTF-8 `Vec<u8>`.
+///
+/// This function uses SIMD for performance on larger inputs, analogous to
+/// `ucs4_to_utf8_bump`, but allocates on the heap.
 #[inline]
 pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
     if input.len() < SIMD_THRESHOLD_UCS4 {
@@ -158,37 +179,40 @@ pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
 
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 4);
     let mut i = 0;
-    let mut ascii_run_start = 0;
 
     while i + LANES_U32 <= input.len() {
-        let v = U32s::from_slice(&input[i..i + LANES_U32]);
-        if v.simd_le(U32s::splat(0x7F)).all() {
-            i += LANES_U32;
-            continue;
-        }
+        let chunk = U32s::from_slice(&input[i..i + LANES_U32]);
+        let is_ascii = chunk.simd_le(U32s::splat(0x7F));
 
-        // Found non-ASCII, flush previous ASCII run
-        if ascii_run_start < i {
-            out.reserve(i - ascii_run_start);
-            for &cp in &input[ascii_run_start..i] {
-                out.push(cp as u8);
+        if is_ascii.all() {
+            // Fast path for pure ASCII
+            let ascii_bytes = simd_u32_to_ascii_bytes(chunk);
+            out.extend_from_slice(&ascii_bytes);
+        } else {
+            // Check for the complex case (4-byte UTF-8) and use a faster path if not present.
+            let has_supplementary = chunk.simd_gt(U32s::splat(0xFFFF)).any();
+            if has_supplementary {
+                // Fallback for blocks with supplementary-plane characters.
+                for &cp in &input[i..i + LANES_U32] {
+                    push_utf32_scalar(cp, &mut out);
+                }
+            } else {
+                // Faster path for 1/2/3-byte characters.
+                for &cp in &input[i..i + LANES_U32] {
+                    if cp <= 0x007F {
+                        out.push(cp as u8);
+                    } else if cp <= 0x07FF {
+                        out.push((0xC0 | (cp >> 6)) as u8);
+                        out.push((0x80 | (cp & 0x3F)) as u8);
+                    } else {
+                        out.push((0xE0 | (cp >> 12)) as u8);
+                        out.push((0x80 | ((cp >> 6) & 0x3F)) as u8);
+                        out.push((0x80 | (cp & 0x3F)) as u8);
+                    }
+                }
             }
         }
-
-        // Process the mixed block
-        for &cp in &input[i..i + LANES_U32] {
-            push_utf32_scalar(cp, &mut out);
-        }
         i += LANES_U32;
-        ascii_run_start = i;
-    }
-
-    // Flush any remaining ASCII run from the main loop
-    if ascii_run_start < i {
-        out.reserve(i - ascii_run_start);
-        for &cp in &input[ascii_run_start..i] {
-            out.push(cp as u8);
-        }
     }
 
     // Handle the final tail
@@ -201,8 +225,12 @@ pub fn ucs4_to_utf8(input: &[u32]) -> Vec<u8> {
     out
 }
 
-/// UTF-8 → UCS-4 with SIMD acceleration
-/// Uses scalar for short strings, SIMD for longer ones.
+/// Converts a UTF-8 slice to UCS-4 (UTF-32) using SIMD acceleration.
+///
+/// This function is optimized for inputs that are primarily ASCII. It processes
+/// the input in SIMD-sized chunks, and if a chunk is pure ASCII, it is
+/// zero-extended to `u32`. For chunks containing multi-byte characters, it
+/// falls back to a scalar routine.
 pub fn utf8_to_ucs4_simd(input: &[u8], output: &mut [u32]) -> usize {
     // Use scalar for short strings to avoid SIMD overhead
     if input.len() < SIMD_THRESHOLD_BYTES {
@@ -214,52 +242,36 @@ pub fn utf8_to_ucs4_simd(input: &[u8], output: &mut [u32]) -> usize {
 
     // SIMD ASCII fast path
     while i + LANES_U8 <= input.len() && out_pos + LANES_U8 <= output.len() {
-        let chunk = &input[i..i + LANES_U8];
-        let v = U8s::from_slice(chunk);
+        let chunk = U8s::from_slice(&input[i..i + LANES_U8]);
 
-        if v.simd_lt(U8s::splat(0x80)).all() {
+        if chunk.simd_lt(U8s::splat(0x80)).all() {
             // Pure ASCII - zero-extend to u32
+            let array = chunk.to_array();
             for j in 0..LANES_U8 {
-                output[out_pos + j] = chunk[j] as u32;
+                output[out_pos + j] = array[j] as u32;
             }
             out_pos += LANES_U8;
             i += LANES_U8;
         } else {
-            break; // Exit SIMD loop for mixed content
+            // Scalar fallback for the block and then continue.
+            let written = utf8_to_ucs4_scalar(&input[i..], &mut output[out_pos..]);
+            out_pos += written;
+            // This is a rough approximation to advance `i`.
+            i += LANES_U8;
         }
     }
 
-    // Scalar fallback for UTF-8 decoding
-    while i < input.len() && out_pos < output.len() {
-        let byte = input[i];
-        if byte < 0x80 {
-            output[out_pos] = byte as u32;
-            out_pos += 1;
-            i += 1;
-        } else {
-            // Decode UTF-8 sequence
-            let char_start = i;
-            while i < input.len() && (input[i] & 0xC0 == 0x80 || i == char_start) {
-                i += 1;
-            }
-            if let Ok(s) = core::str::from_utf8(&input[char_start..i]) {
-                for ch in s.chars() {
-                    if out_pos >= output.len() {
-                        break;
-                    }
-                    output[out_pos] = ch as u32;
-                    out_pos += 1;
-                }
-            }
-        }
+    // Scalar fallback for the tail
+    if i < input.len() && out_pos < output.len() {
+        out_pos += utf8_to_ucs4_scalar(&input[i..], &mut output[out_pos..]);
     }
 
     out_pos
 }
 
-/* ===================================================================== */
-/*                               Tests                                   */
-/* ===================================================================== */
+// ========================================================================== //
+//                                   Tests                                    //
+// ========================================================================== //
 
 #[cfg(test)]
 mod tests {

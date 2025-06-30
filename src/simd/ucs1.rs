@@ -1,25 +1,28 @@
 //! UCS1 (Latin-1) ↔ UTF-8 conversions
 
-use crate::simd::{U8s, LANES_U8, SIMD_THRESHOLD_UCS1, SIMD_THRESHOLD_BYTES};
+use crate::simd::{LANES_U8, SIMD_THRESHOLD_BYTES, SIMD_THRESHOLD_UCS1, U8s};
 use core::simd::cmp::SimdPartialOrd;
 use std::borrow::Cow;
 
-/* ===================================================================== */
-/*                      Scalar Implementations                           */
-/* ===================================================================== */
+// ========================================================================== //
+//                         Scalar Implementations                             //
+// ========================================================================== //
 
-/// Scalar Latin-1 → UTF-8 conversion (optimized for short strings)
+/// Converts a UCS-1 (Latin-1) slice to a UTF-8 string in a `bumpalo` arena.
+///
+/// This function provides a scalar fallback for short inputs where SIMD overhead
+/// is not justified. It returns a borrowed `&str` for pure-ASCII input.
 #[inline]
 fn ucs1_to_utf8_scalar_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a str {
     // Fast path for pure ASCII
     if input.iter().all(|&b| b < 0x80) {
         return unsafe { core::str::from_utf8_unchecked(input) };
     }
-    
+
     // Count non-ASCII bytes for exact allocation
     let extra = input.iter().filter(|&&b| b >= 0x80).count();
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() + extra, bump);
-    
+
     for &b in input {
         if b < 0x80 {
             out.push(b);
@@ -28,7 +31,7 @@ fn ucs1_to_utf8_scalar_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a
             out.push(0x80 | (b & 0x3F));
         }
     }
-    
+
     let slice = out.into_bump_slice();
     unsafe { core::str::from_utf8_unchecked(slice) }
 }
@@ -39,11 +42,11 @@ fn ucs1_to_utf8_scalar(input: &[u8]) -> Cow<'_, str> {
     if input.iter().all(|&b| b < 0x80) {
         return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
     }
-    
+
     // Count non-ASCII bytes for exact allocation
     let extra = input.iter().filter(|&&b| b >= 0x80).count();
     let mut out = Vec::with_capacity(input.len() + extra);
-    
+
     for &b in input {
         if b < 0x80 {
             out.push(b);
@@ -52,16 +55,19 @@ fn ucs1_to_utf8_scalar(input: &[u8]) -> Cow<'_, str> {
             out.push(0x80 | (b & 0x3F));
         }
     }
-    
+
     Cow::Owned(unsafe { String::from_utf8_unchecked(out) })
 }
 
-/// Scalar UTF-8 → UCS1 conversion (optimized for short strings)
+/// Converts a UTF-8 slice to UCS-1 (Latin-1).
+///
+/// This function provides a scalar fallback for short inputs. It only converts
+/// codepoints that are valid in Latin-1 (U+0000 to U+00FF).
 #[inline]
 fn utf8_to_ucs1_scalar(input: &[u8], output: &mut [u8]) -> usize {
     let mut out_pos = 0;
     let mut i = 0;
-    
+
     while i < input.len() && out_pos < output.len() {
         let byte = input[i];
         if byte < 0x80 {
@@ -97,71 +103,23 @@ fn utf8_to_ucs1_scalar(input: &[u8], output: &mut [u8]) -> usize {
             }
         }
     }
-    
+
     out_pos
 }
 
-/* ===================================================================== */
-/*               Py_UCS1 (Latin-1) → UTF-8                               */
-/* ===================================================================== */
+// ========================================================================== //
+//                      UCS-1 (Latin-1) to UTF-8                              //
+// ========================================================================== //
 
-/* LUTs for two-byte Latin-1 expansion */
-static HIGH_LUT: [u8; 256] = {
-    let mut t = [0u8; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = 0xC0 | ((i as u8) >> 6);
-        i += 1;
-    }
-    t
-};
-static LOW_LUT: [u8; 256] = {
-    let mut t = [0u8; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = 0x80 | ((i as u8) & 0x3F);
-        i += 1;
-    }
-    t
-};
-
-#[inline]
-fn expand_latin1_block_bump(block: &[u8], out: &mut bumpalo::collections::Vec<u8>) {
-    for &b in block {
-        if b < 0x80 {
-            out.push(b)
-        } else {
-            out.push(HIGH_LUT[b as usize]);
-            out.push(LOW_LUT[b as usize]);
-        }
-    }
-}
-
-#[inline]
-fn expand_latin1_block(block: &[u8], out: &mut Vec<u8>) {
-    for &b in block {
-        if b < 0x80 {
-            out.push(b)
-        } else {
-            out.push(HIGH_LUT[b as usize]);
-            out.push(LOW_LUT[b as usize]);
-        }
-    }
-}
-
-/// Convert a Latin-1 slice to UTF-8 inside a bump arena.
-/// * Pure ASCII  → borrowed `&str`  (zero-alloc)
-/// * Mixed input → bump-allocated `&str`
+/// Converts a UCS-1 (Latin-1) slice to a UTF-8 string in a `bumpalo` arena.
 ///
-/// Changes vs. the old version
-/// ---------------------------
-/// 1. **One pass only** – we discover non-ASCII lanes while we expand, so the
-///    string is touched exactly once.
-/// 2. **Bulk ASCII copy** – consecutive ASCII runs are copied with
-///    `ptr::copy_nonoverlapping`, not `push` per byte.
-/// 3. **Mask.none()/any()** instead of `to_bitmask()` for the hot-path check.
+/// This function uses SIMD for performance on larger inputs.
+/// - For pure ASCII input, it returns a borrowed `&str` without allocation.
+/// - For mixed ASCII/Latin-1, it returns a `&str` allocated in the arena.
 ///
-/// Requires the same `U8s`/`LANES_U8` aliases and `expand_latin1_block_bump`.
+/// The implementation processes chunks of the input using SIMD vectors. If a
+/// chunk is entirely ASCII, it is copied directly. If it contains non-ASCII
+/// bytes, they are expanded into their 2-byte UTF-8 representation.
 #[inline]
 pub fn ucs1_to_utf8_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a str {
     // Use scalar for short strings to avoid SIMD overhead
@@ -182,16 +140,28 @@ pub fn ucs1_to_utf8_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a st
 
     /* 2. Over-allocate and convert in a single pass */
     let mut out = bumpalo::collections::Vec::with_capacity_in(input.len() * 2, bump);
-
-    /* 3. SIMD loop with bulk ASCII copy */
     let mut i = 0;
+
+    /* 3. SIMD loop */
     while i + LANES_U8 <= input.len() {
-        let blk = &input[i..i + LANES_U8];
-        let v = U8s::from_slice(blk);
-        if v.simd_lt(U8s::splat(0x80)).all() {
-            out.extend_from_slice(blk);
+        let chunk = U8s::from_slice(&input[i..i + LANES_U8]);
+        let is_ascii = chunk.simd_lt(U8s::splat(0x80));
+
+        if is_ascii.all() {
+            out.extend_from_slice(chunk.as_array());
         } else {
-            expand_latin1_block_bump(blk, &mut out);
+            // Hybrid SIMD-scalar expansion for mixed content
+            let high_bytes = (chunk >> 6) | U8s::splat(0xC0);
+            let low_bytes = (chunk & U8s::splat(0x3F)) | U8s::splat(0x80);
+
+            for j in 0..LANES_U8 {
+                if is_ascii.test(j) {
+                    out.push(chunk[j]);
+                } else {
+                    out.push(high_bytes[j]);
+                    out.push(low_bytes[j]);
+                }
+            }
         }
         i += LANES_U8;
     }
@@ -206,13 +176,18 @@ pub fn ucs1_to_utf8_bump<'a>(input: &'a [u8], bump: &'a bumpalo::Bump) -> &'a st
         }
     }
 
-    unsafe { core::str::from_utf8_unchecked(out.into_bump_slice()) }
+    let slice = out.into_bump_slice();
+    unsafe { core::str::from_utf8_unchecked(slice) }
 }
 
-/// Convert a Latin-1 slice to UTF-8.
-/// * Pure ASCII → borrowed `&str` (zero-alloc)
-/// * Mixed input → owned `String` inside `Cow::Owned`
-/// Uses scalar for short strings, SIMD for longer ones.
+/// Converts a UCS-1 (Latin-1) slice to a UTF-8 `Cow<str>`.
+///
+/// This function uses SIMD for performance on larger inputs.
+/// - For pure ASCII input, it returns `Cow::Borrowed`.
+/// - For mixed ASCII/Latin-1, it returns `Cow::Owned`.
+///
+/// The implementation is analogous to `ucs1_to_utf8_bump` but allocates on
+/// the heap.
 #[inline]
 pub fn ucs1_to_utf8<'a>(input: &'a [u8]) -> Cow<'a, str> {
     // Use scalar for short strings to avoid SIMD overhead
@@ -233,50 +208,51 @@ pub fn ucs1_to_utf8<'a>(input: &'a [u8]) -> Cow<'a, str> {
 
     /* 2. Over-allocate and convert in a single pass */
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 2);
-
-    /* 3. SIMD loop with bulk ASCII copy */
     let mut i = 0;
-    let mut ascii_run_start = 0;
+
+    /* 3. SIMD loop */
     while i + LANES_U8 <= input.len() {
-        let v = U8s::from_slice(&input[i..i + LANES_U8]);
-        let mask = v.simd_ge(U8s::splat(0x80));
+        let chunk = U8s::from_slice(&input[i..i + LANES_U8]);
+        let is_ascii = chunk.simd_lt(U8s::splat(0x80));
 
-        if !mask.any() {
-            i += LANES_U8;
-            continue;
+        if is_ascii.all() {
+            out.extend_from_slice(chunk.as_array());
+        } else {
+            // Hybrid SIMD-scalar expansion for mixed content
+            let high_bytes = (chunk >> 6) | U8s::splat(0xC0);
+            let low_bytes = (chunk & U8s::splat(0x3F)) | U8s::splat(0x80);
+
+            for j in 0..LANES_U8 {
+                if is_ascii.test(j) {
+                    out.push(chunk[j]);
+                } else {
+                    out.push(high_bytes[j]);
+                    out.push(low_bytes[j]);
+                }
+            }
         }
-
-        // Flush preceding ASCII run
-        if ascii_run_start < i {
-            out.extend_from_slice(&input[ascii_run_start..i]);
-        }
-        
-        expand_latin1_block(v.as_array(), &mut out);
-
         i += LANES_U8;
-        ascii_run_start = i;
     }
 
     /* 4. Scalar tail */
-    if ascii_run_start < input.len() {
-        out.extend_from_slice(&input[ascii_run_start..i]); // Copy remaining ASCII
-        let tail = &input[i..];
-        for &b in tail {
-            if b < 0x80 {
-                out.push(b);
-            } else {
-                out.push(0xC0 | (b >> 6));
-                out.push(0x80 | (b & 0x3F));
-            }
+    for &b in &input[i..] {
+        if b < 0x80 {
+            out.push(b);
+        } else {
+            out.push(0xC0 | (b >> 6));
+            out.push(0x80 | (b & 0x3F));
         }
     }
-    
-    out.shrink_to_fit();
+
     Cow::Owned(unsafe { String::from_utf8_unchecked(out) })
 }
 
-/// UTF-8 → UCS-1 with SIMD acceleration (for ASCII/Latin-1 strings)
-/// Uses scalar for short strings, SIMD for longer ones.
+/// Converts a UTF-8 slice to UCS-1 (Latin-1) using SIMD acceleration.
+///
+/// This function is optimized for inputs that are primarily ASCII. It processes
+/// the input in SIMD-sized chunks, and if a chunk is pure ASCII, it is copied
+/// directly. For chunks containing multi-byte characters, it falls back to a
+/// scalar routine.
 pub fn utf8_to_ucs1_simd(input: &[u8], output: &mut [u8]) -> usize {
     // Use scalar for short strings to avoid SIMD overhead
     if input.len() < SIMD_THRESHOLD_BYTES {
@@ -329,9 +305,9 @@ pub fn utf8_to_ucs1_simd(input: &[u8], output: &mut [u8]) -> usize {
     out_pos
 }
 
-/* ===================================================================== */
-/*                               Tests                                   */
-/* ===================================================================== */
+// ========================================================================== //
+//                                   Tests                                    //
+// ========================================================================== //
 
 #[cfg(test)]
 mod tests {
