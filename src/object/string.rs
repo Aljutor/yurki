@@ -1,20 +1,22 @@
 use pyo3::{ffi, prelude::*};
-use std::{mem, ptr, alloc};
+use std::{alloc, mem, ptr};
 
 use crate::debug_println;
-
+use crate::simd;
 
 /// Allocate bytes with usize alignment.
 #[inline(always)]
 unsafe fn internal_alloc_bytes(size: usize) -> *mut u8 {
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    let layout =
+        alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
     alloc::alloc(layout)
 }
 
 /// Free block with original size for layout consistency.
 #[inline(always)]
 unsafe fn internal_free_bytes(ptr: *mut std::ffi::c_void, size: usize) {
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
+    let layout =
+        alloc::Layout::from_size_align(size, mem::align_of::<usize>()).expect("invalid layout");
     alloc::dealloc(ptr as *mut u8, layout)
 }
 
@@ -156,10 +158,8 @@ pub unsafe fn init_string_type(m: *mut ffi::PyObject) -> PyResult<()> {
 pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
     debug_println!("create_fast_string: input {:?}", text);
 
-    // Single-pass scan: get max codepoint and length
-    let (character_count, max_codepoint) = text.chars().fold((0, 0u32), |(len, max_cp), ch| {
-        (len + 1, max_cp | (ch as u32))
-    });
+    // SIMD-accelerated analysis: get max codepoint and length in one pass
+    let (character_count, max_codepoint) = simd::analyze_utf8_simd(text.as_bytes());
 
     // Choose internal kind / element size
     let (unicode_kind, element_size) = match max_codepoint {
@@ -183,7 +183,6 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
         ffi::PyErr_NoMemory();
         return std::ptr::null_mut();
     }
-    std::ptr::write_bytes(raw, 0, total_bytes);
     debug_println!("  alloc {:p}, total_bytes={total_bytes}", raw);
 
     // PyObject header
@@ -216,21 +215,25 @@ pub unsafe fn create_fast_string(text: &str) -> *mut ffi::PyObject {
         compact_unicode.utf8 = std::ptr::null_mut();
     }
 
-    // Copy canonical data just after real header
+    // Copy canonical data just after real header using SIMD
     let payload = raw.add(header_actual);
     match element_size {
-        1 => std::ptr::copy_nonoverlapping(text.as_ptr(), payload, character_count),
+        1 => {
+            let dst_slice = std::slice::from_raw_parts_mut(payload, character_count);
+            let actual_len = simd::utf8_to_ucs1_simd(text.as_bytes(), dst_slice);
+            debug_assert_eq!(actual_len, character_count);
+        }
         2 => {
             let dst = payload as *mut u16;
-            for (i, cp) in text.encode_utf16().enumerate() {
-                *dst.add(i) = cp;
-            }
+            let dst_slice = std::slice::from_raw_parts_mut(dst, character_count);
+            let actual_len = simd::utf8_to_ucs2_simd(text.as_bytes(), dst_slice);
+            debug_assert_eq!(actual_len, character_count);
         }
         4 => {
             let dst = payload as *mut u32;
-            for (i, ch) in text.chars().enumerate() {
-                *dst.add(i) = ch as u32;
-            }
+            let dst_slice = std::slice::from_raw_parts_mut(dst, character_count);
+            let actual_len = simd::utf8_to_ucs4_simd(text.as_bytes(), dst_slice);
+            debug_assert_eq!(actual_len, character_count);
         }
         _ => unreachable!(),
     }

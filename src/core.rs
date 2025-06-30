@@ -5,7 +5,7 @@ use pyo3::types::PyList;
 
 // Import the unified debug system
 use crate::debug_println;
-use crate::object::{create_list_empty, list_set_item_transfer, convert_pystring};
+use crate::object::{convert_pystring, create_list_empty, list_set_item_transfer};
 
 // hack object to pass raw pointer for PyObject
 #[derive(Clone, Debug)]
@@ -173,7 +173,7 @@ where
                 if inplace {
                     sender.send(WorkerResult::PyObject((i, py_obj))).unwrap();
                 } else {
-                    unsafe {set_list_item(&target_list_ptr, i, py_obj)};
+                    unsafe { set_list_item(&target_list_ptr, i, py_obj) };
                 }
 
                 if (i - range_start) % MANAGEMENT_BATCH_SIZE == 0 {
@@ -259,7 +259,7 @@ where
                 let bump_string = get_string_at_idx(&input_list_ptr, i, bump_manager.bump());
                 let py_obj = func(bump_string);
                 set_list_item(&result_list_ptr, i, py_obj);
-                
+
                 if i % MANAGEMENT_BATCH_SIZE == 0 {
                     bump_manager.manage_memory();
                 }

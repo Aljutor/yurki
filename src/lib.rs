@@ -2,17 +2,15 @@
 #![feature(portable_simd)]
 #![feature(min_specialization)]
 
+use crate::converter::ToPyObject;
 use mimalloc::MiMalloc;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyString};
 use regex::RegexBuilder;
-use crate::converter::ToPyObject;
-
 
 // Let's globaly use mimmaloc as allocator
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
 
 // Unified Macro for Debug Message
 #[cfg(feature = "debug-yurki-internal")]
@@ -28,10 +26,10 @@ macro_rules! debug_println {
 // Export the macro so it can be used in other modules
 pub(crate) use debug_println;
 
-
 pub mod converter;
 pub mod core;
 pub mod object;
+pub mod simd;
 pub mod text;
 
 #[pymodule(gil_used = false)]

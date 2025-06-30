@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::core::PyObjectPtr;
-use crate::object::{create_list_empty, list_set_item_transfer};
 use crate::object::create_fast_string;
+use crate::object::{create_list_empty, list_set_item_transfer};
 use parking_lot::Mutex;
 use pyo3::ffi as pyo3_ffi;
 use std::borrow::Cow;
